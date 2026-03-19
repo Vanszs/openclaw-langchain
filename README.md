@@ -128,6 +128,7 @@ Run `openclaw doctor` to surface risky/misconfigured DM policies.
 - **[Local-first Gateway](https://docs.openclaw.ai/gateway)** — single control plane for sessions, channels, tools, and events.
 - **[Multi-channel inbox](https://docs.openclaw.ai/channels)** — WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, BlueBubbles (iMessage), iMessage (legacy), IRC, Microsoft Teams, Matrix, Feishu, LINE, Mattermost, Nextcloud Talk, Nostr, Synology Chat, Tlon, Twitch, Zalo, Zalo Personal, WebChat, macOS, iOS/Android.
 - **[Multi-agent routing](https://docs.openclaw.ai/gateway/configuration)** — route inbound channels/accounts/peers to isolated agents (workspaces + per-agent sessions).
+- **[Memory plugins](https://docs.openclaw.ai/concepts/memory)** — keep the existing `memory_search`, `memory_get`, and `openclaw memory` UX while selecting the active backend via `plugins.slots.memory`. Use `memory-core` by default or switch to LangChain + Chroma with `memory-langchain`.
 - **[Voice Wake](https://docs.openclaw.ai/nodes/voicewake) + [Talk Mode](https://docs.openclaw.ai/nodes/talk)** — wake words on macOS/iOS and continuous voice on Android (ElevenLabs + system TTS fallback).
 - **[Live Canvas](https://docs.openclaw.ai/platforms/mac/canvas)** — agent-driven visual workspace with [A2UI](https://docs.openclaw.ai/platforms/mac/canvas#canvas-a2ui).
 - **[First-class tools](https://docs.openclaw.ai/tools)** — browser, canvas, nodes, cron, sessions, and Discord/Slack actions.
@@ -195,6 +196,7 @@ WhatsApp / Telegram / Slack / Discord / Google Chat / Signal / iMessage / BlueBu
 └──────────────┬────────────────┘
                │
                ├─ Pi agent (RPC)
+               ├─ Memory backend (`memory-core` or `memory-langchain`)
                ├─ CLI (openclaw …)
                ├─ WebChat UI
                ├─ macOS app
@@ -328,6 +330,20 @@ Minimal `~/.openclaw/openclaw.json` (model + defaults):
 ```
 
 [Full configuration reference (all keys + examples).](https://docs.openclaw.ai/gateway/configuration)
+
+Memory / RAG backends:
+
+- Default memory plugin: `memory-core`
+- Disable memory plugins: `plugins.slots.memory = "none"`
+- LangChain + Chroma backend: `plugins.slots.memory = "memory-langchain"`
+
+With `memory-langchain`, OpenClaw still owns the gateway, sessions, channels, agent loop, model fallback, and subagents. LangChain.js is used only for ingest, chunking, embeddings, Chroma storage, and retrieval.
+
+Details:
+
+- [Memory concepts](https://docs.openclaw.ai/concepts/memory)
+- [CLI memory commands](https://docs.openclaw.ai/cli/memory)
+- [Configuration reference](https://docs.openclaw.ai/gateway/configuration-reference)
 
 ## Security model (important)
 
