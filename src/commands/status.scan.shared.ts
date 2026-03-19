@@ -121,26 +121,28 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
   requireDefaultStore?: (agentId: string) => string | null;
 }): Promise<MemoryStatusSnapshot | null> {
   const { cfg, agentStatus, memoryPlugin } = params;
-  if (!memoryPlugin.enabled || memoryPlugin.slot !== "memory-core") {
+  if (!memoryPlugin.enabled || !memoryPlugin.slot) {
     return null;
   }
   const agentId = agentStatus.defaultId ?? "main";
-  const defaultStorePath = params.requireDefaultStore?.(agentId);
-  if (
-    defaultStorePath &&
-    !hasExplicitMemorySearchConfig(cfg, agentId) &&
-    !existsSync(defaultStorePath)
-  ) {
-    return null;
-  }
-  const resolvedMemory = params.resolveMemoryConfig(cfg, agentId);
-  if (!resolvedMemory) {
-    return null;
-  }
-  const shouldInspectStore =
-    hasExplicitMemorySearchConfig(cfg, agentId) || existsSync(resolvedMemory.store.path);
-  if (!shouldInspectStore) {
-    return null;
+  if (memoryPlugin.slot === "memory-core") {
+    const defaultStorePath = params.requireDefaultStore?.(agentId);
+    if (
+      defaultStorePath &&
+      !hasExplicitMemorySearchConfig(cfg, agentId) &&
+      !existsSync(defaultStorePath)
+    ) {
+      return null;
+    }
+    const resolvedMemory = params.resolveMemoryConfig(cfg, agentId);
+    if (!resolvedMemory) {
+      return null;
+    }
+    const shouldInspectStore =
+      hasExplicitMemorySearchConfig(cfg, agentId) || existsSync(resolvedMemory.store.path);
+    if (!shouldInspectStore) {
+      return null;
+    }
   }
   const { manager } = await params.getMemorySearchManager({ cfg, agentId, purpose: "status" });
   if (!manager) {

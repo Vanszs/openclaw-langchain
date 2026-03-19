@@ -94,6 +94,14 @@ async function resolveMemoryStatusSnapshot(params: {
   });
 }
 
+async function ensureMemoryPluginLoadedIfNeeded(memoryPlugin: MemoryPluginStatus): Promise<void> {
+  if (!memoryPlugin.enabled || !memoryPlugin.slot || memoryPlugin.slot === "memory-core") {
+    return;
+  }
+  const { ensurePluginRegistryLoaded } = await loadPluginRegistryModule();
+  ensurePluginRegistryLoaded({ scope: "all" });
+}
+
 async function readStatusSourceConfig(): Promise<OpenClawConfig> {
   if (!shouldSkipMissingConfigFastPath() && !existsSync(resolveConfigPath(process.env))) {
     return {};
@@ -185,6 +193,7 @@ export async function scanStatusJsonFast(
     ? pickGatewaySelfPresence(gatewayProbe.presence)
     : null;
   const memoryPlugin = resolveMemoryPluginStatus(cfg);
+  await ensureMemoryPluginLoadedIfNeeded(memoryPlugin);
   const memory = await resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
   const pluginCompatibility = buildPluginCompatibilityNotices({ config: cfg });
 

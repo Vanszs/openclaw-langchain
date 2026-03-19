@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["extensions/**/*", "src/types/**/*.d.ts", "src/infra/scripts-modules.d.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "extensions/**/*.test.ts",
+    "extensions/**/*.test.tsx",
+    "extensions/**/*.spec.ts",
+    "extensions/**/*.spec.tsx",
+    "extensions/**/*.e2e.test.ts",
+    "extensions/**/*.live.test.ts"
+  ]
+}

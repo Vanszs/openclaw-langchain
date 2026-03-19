@@ -562,6 +562,15 @@ export async function runSetupWizard(
     });
   }
 
+  const configureMemory = await prompter.confirm({
+    message: "Configure memory / RAG now?",
+    initialValue: flow === "advanced",
+  });
+  if (configureMemory) {
+    const { promptMemoryConfig } = await import("../commands/memory-config-prompt.js");
+    nextConfig = await promptMemoryConfig(nextConfig, workspaceDir, prompter);
+  }
+
   if (opts.skipSkills) {
     await prompter.note("Skipping skills setup.", "Skills");
   } else {

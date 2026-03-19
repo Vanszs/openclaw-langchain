@@ -4,12 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveMemoryPluginStatus } from "../commands/status.scan.shared.js";
+import type { OpenClawConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { setVerbose } from "../globals.js";
 import { getMemorySearchManager, type MemorySearchManagerResult } from "../memory/index.js";
 import { listMemoryFiles, normalizeExtraMemoryPaths } from "../memory/internal.js";
+import { getMemoryCliProvider } from "../memory/plugin-cli-registry.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
@@ -32,7 +35,7 @@ type MemoryCommandOptions = {
 type MemoryManager = NonNullable<MemorySearchManagerResult["manager"]>;
 type MemoryManagerPurpose = Parameters<typeof getMemorySearchManager>[0]["purpose"];
 
-type MemorySourceName = "memory" | "sessions";
+type MemorySourceName = "memory" | "sessions" | "repo" | "docs" | "chat" | "email";
 
 type SourceScan = {
   source: MemorySourceName;
@@ -44,6 +47,14 @@ type MemorySourceScan = {
   sources: SourceScan[];
   totalFiles: number | null;
   issues: string[];
+};
+
+type MemoryPluginCustomStatus = {
+  collectionName?: unknown;
+  queueDepth?: unknown;
+  lastSyncAt?: unknown;
+  staleIndex?: unknown;
+  backendError?: unknown;
 };
 
 type LoadedMemoryCommandConfig = {
@@ -332,6 +343,164 @@ async function scanMemorySources(params: {
   return { sources: scans, totalFiles, issues };
 }
 
+function formatPluginMemoryCustomStatus(custom: MemoryPluginCustomStatus): string[] {
+  const lines: string[] = [];
+  if (typeof custom.collectionName === "string" && custom.collectionName.trim()) {
+    lines.push(`Collection: ${custom.collectionName}`);
+  }
+  if (typeof custom.queueDepth === "number") {
+    lines.push(`Queue depth: ${custom.queueDepth}`);
+  }
+  if (typeof custom.lastSyncAt === "number" && Number.isFinite(custom.lastSyncAt)) {
+    const ageMs = Math.max(0, Date.now() - custom.lastSyncAt);
+    const seconds = Math.floor(ageMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const ageLabel =
+      hours > 0
+        ? `${hours}h ${minutes % 60}m`
+        : minutes > 0
+          ? `${minutes}m ${seconds % 60}s`
+          : `${seconds}s`;
+    lines.push(`Last sync: ${ageLabel} ago`);
+  }
+  if (custom.staleIndex === true) {
+    lines.push("Index freshness: stale");
+  }
+  if (typeof custom.backendError === "string" && custom.backendError.trim()) {
+    lines.push(`Backend error: ${custom.backendError}`);
+  }
+  return lines;
+}
+
+async function runMemoryIndex(opts: MemoryCommandOptions): Promise<void> {
+  setVerbose(Boolean(opts.verbose));
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory index");
+  emitMemorySecretResolveDiagnostics(diagnostics);
+  const agentIds = resolveAgentIds(cfg, opts.agent);
+  for (const agentId of agentIds) {
+    await withMemoryManagerForAgent({
+      cfg,
+      agentId,
+      run: async (manager) => {
+        try {
+          const syncFn = manager.sync ? manager.sync.bind(manager) : undefined;
+          if (opts.verbose) {
+            const status = manager.status();
+            const rich = isRich();
+            const heading = (text: string) => colorize(rich, theme.heading, text);
+            const muted = (text: string) => colorize(rich, theme.muted, text);
+            const info = (text: string) => colorize(rich, theme.info, text);
+            const warn = (text: string) => colorize(rich, theme.warn, text);
+            const label = (text: string) => muted(`${text}:`);
+            const sourceLabels = (status.sources ?? []).map((source) =>
+              formatSourceLabel(source, status.workspaceDir ?? "", agentId),
+            );
+            const extraPaths = status.workspaceDir
+              ? formatExtraPaths(status.workspaceDir, status.extraPaths ?? [])
+              : [];
+            const requestedProvider = status.requestedProvider ?? status.provider;
+            const modelLabel = status.model ?? status.provider;
+            const lines = [
+              `${heading("Memory Index")} ${muted(`(${agentId})`)}`,
+              `${label("Provider")} ${info(status.provider)} ${muted(
+                `(requested: ${requestedProvider})`,
+              )}`,
+              `${label("Model")} ${info(modelLabel)}`,
+              sourceLabels.length ? `${label("Sources")} ${info(sourceLabels.join(", "))}` : null,
+              extraPaths.length ? `${label("Extra paths")} ${info(extraPaths.join(", "))}` : null,
+            ].filter(Boolean) as string[];
+            if (status.fallback) {
+              lines.push(`${label("Fallback")} ${warn(status.fallback.from)}`);
+            }
+            defaultRuntime.log(lines.join("\n"));
+            defaultRuntime.log("");
+          }
+          const startedAt = Date.now();
+          let lastLabel = "Indexing memory…";
+          let lastCompleted = 0;
+          let lastTotal = 0;
+          const formatElapsed = () => {
+            const elapsedMs = Math.max(0, Date.now() - startedAt);
+            const seconds = Math.floor(elapsedMs / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+          };
+          const formatEta = () => {
+            if (lastTotal <= 0 || lastCompleted <= 0) {
+              return null;
+            }
+            const elapsedMs = Math.max(1, Date.now() - startedAt);
+            const rate = lastCompleted / elapsedMs;
+            if (!Number.isFinite(rate) || rate <= 0) {
+              return null;
+            }
+            const remainingMs = Math.max(0, (lastTotal - lastCompleted) / rate);
+            const seconds = Math.floor(remainingMs / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+          };
+          const buildLabel = () => {
+            const elapsed = formatElapsed();
+            const eta = formatEta();
+            return eta
+              ? `${lastLabel} · elapsed ${elapsed} · eta ${eta}`
+              : `${lastLabel} · elapsed ${elapsed}`;
+          };
+          if (!syncFn) {
+            defaultRuntime.log("Memory backend does not support manual reindex.");
+            return;
+          }
+          await withProgressTotals(
+            {
+              label: "Indexing memory…",
+              total: 0,
+              fallback: opts.verbose ? "line" : undefined,
+            },
+            async (update, progress) => {
+              const interval = setInterval(() => {
+                progress.setLabel(buildLabel());
+              }, 1000);
+              try {
+                await syncFn({
+                  reason: "cli",
+                  force: Boolean(opts.force),
+                  progress: (syncUpdate) => {
+                    if (syncUpdate.label) {
+                      lastLabel = syncUpdate.label;
+                    }
+                    lastCompleted = syncUpdate.completed;
+                    lastTotal = syncUpdate.total;
+                    update({
+                      completed: syncUpdate.completed,
+                      total: syncUpdate.total,
+                      label: buildLabel(),
+                    });
+                    progress.setLabel(buildLabel());
+                  },
+                });
+              } finally {
+                clearInterval(interval);
+              }
+            },
+          );
+          const qmdIndexSummary = await summarizeQmdIndexArtifact(manager);
+          if (qmdIndexSummary) {
+            defaultRuntime.log(qmdIndexSummary);
+          }
+          defaultRuntime.log(`Memory index updated (${agentId}).`);
+        } catch (err) {
+          const message = formatErrorMessage(err);
+          defaultRuntime.error(`Memory index failed (${agentId}): ${message}`);
+          process.exitCode = 1;
+        }
+      },
+    });
+  }
+}
+
 export async function runMemoryStatus(opts: MemoryCommandOptions) {
   setVerbose(Boolean(opts.verbose));
   const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory status");
@@ -556,6 +725,17 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
         lines.push(`${label("Batch error")} ${warn(status.batch.lastError)}`);
       }
     }
+    const pluginCustomLines = formatPluginMemoryCustomStatus(
+      (status.custom ?? {}) as MemoryPluginCustomStatus,
+    );
+    for (const entry of pluginCustomLines) {
+      const [title, ...rest] = entry.split(": ");
+      lines.push(
+        rest.length > 0
+          ? `${label(title)} ${info(rest.join(": "))}`
+          : `${label("Plugin")} ${info(entry)}`,
+      );
+    }
     if (status.fallback?.reason) {
       lines.push(muted(status.fallback.reason));
     }
@@ -573,10 +753,10 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
   }
 }
 
-export function registerMemoryCli(program: Command) {
+function registerBuiltinMemoryCli(program: Command) {
   const memory = program
     .command("memory")
-    .description("Search, inspect, and reindex memory files")
+    .description("Search, inspect, and reindex memory sources")
     .addHelpText(
       "after",
       () =>
@@ -584,6 +764,7 @@ export function registerMemoryCli(program: Command) {
           ["openclaw memory status", "Show index and provider status."],
           ["openclaw memory status --deep", "Probe embedding provider readiness."],
           ["openclaw memory index --force", "Force a full reindex."],
+          ["openclaw memory sync", "Sync the active memory backend without changing the UX."],
           ['openclaw memory search "meeting notes"', "Quick search using positional query."],
           [
             'openclaw memory search --query "deployment" --max-results 20',
@@ -612,135 +793,29 @@ export function registerMemoryCli(program: Command) {
     .option("--force", "Force full reindex", false)
     .option("--verbose", "Verbose logging", false)
     .action(async (opts: MemoryCommandOptions) => {
-      setVerbose(Boolean(opts.verbose));
-      const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory index");
-      emitMemorySecretResolveDiagnostics(diagnostics);
-      const agentIds = resolveAgentIds(cfg, opts.agent);
-      for (const agentId of agentIds) {
-        await withMemoryManagerForAgent({
-          cfg,
-          agentId,
-          run: async (manager) => {
-            try {
-              const syncFn = manager.sync ? manager.sync.bind(manager) : undefined;
-              if (opts.verbose) {
-                const status = manager.status();
-                const rich = isRich();
-                const heading = (text: string) => colorize(rich, theme.heading, text);
-                const muted = (text: string) => colorize(rich, theme.muted, text);
-                const info = (text: string) => colorize(rich, theme.info, text);
-                const warn = (text: string) => colorize(rich, theme.warn, text);
-                const label = (text: string) => muted(`${text}:`);
-                const sourceLabels = (status.sources ?? []).map((source) =>
-                  formatSourceLabel(source, status.workspaceDir ?? "", agentId),
-                );
-                const extraPaths = status.workspaceDir
-                  ? formatExtraPaths(status.workspaceDir, status.extraPaths ?? [])
-                  : [];
-                const requestedProvider = status.requestedProvider ?? status.provider;
-                const modelLabel = status.model ?? status.provider;
-                const lines = [
-                  `${heading("Memory Index")} ${muted(`(${agentId})`)}`,
-                  `${label("Provider")} ${info(status.provider)} ${muted(
-                    `(requested: ${requestedProvider})`,
-                  )}`,
-                  `${label("Model")} ${info(modelLabel)}`,
-                  sourceLabels.length
-                    ? `${label("Sources")} ${info(sourceLabels.join(", "))}`
-                    : null,
-                  extraPaths.length
-                    ? `${label("Extra paths")} ${info(extraPaths.join(", "))}`
-                    : null,
-                ].filter(Boolean) as string[];
-                if (status.fallback) {
-                  lines.push(`${label("Fallback")} ${warn(status.fallback.from)}`);
-                }
-                defaultRuntime.log(lines.join("\n"));
-                defaultRuntime.log("");
-              }
-              const startedAt = Date.now();
-              let lastLabel = "Indexing memory…";
-              let lastCompleted = 0;
-              let lastTotal = 0;
-              const formatElapsed = () => {
-                const elapsedMs = Math.max(0, Date.now() - startedAt);
-                const seconds = Math.floor(elapsedMs / 1000);
-                const minutes = Math.floor(seconds / 60);
-                const remainingSeconds = seconds % 60;
-                return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
-              };
-              const formatEta = () => {
-                if (lastTotal <= 0 || lastCompleted <= 0) {
-                  return null;
-                }
-                const elapsedMs = Math.max(1, Date.now() - startedAt);
-                const rate = lastCompleted / elapsedMs;
-                if (!Number.isFinite(rate) || rate <= 0) {
-                  return null;
-                }
-                const remainingMs = Math.max(0, (lastTotal - lastCompleted) / rate);
-                const seconds = Math.floor(remainingMs / 1000);
-                const minutes = Math.floor(seconds / 60);
-                const remainingSeconds = seconds % 60;
-                return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
-              };
-              const buildLabel = () => {
-                const elapsed = formatElapsed();
-                const eta = formatEta();
-                return eta
-                  ? `${lastLabel} · elapsed ${elapsed} · eta ${eta}`
-                  : `${lastLabel} · elapsed ${elapsed}`;
-              };
-              if (!syncFn) {
-                defaultRuntime.log("Memory backend does not support manual reindex.");
-                return;
-              }
-              await withProgressTotals(
-                {
-                  label: "Indexing memory…",
-                  total: 0,
-                  fallback: opts.verbose ? "line" : undefined,
-                },
-                async (update, progress) => {
-                  const interval = setInterval(() => {
-                    progress.setLabel(buildLabel());
-                  }, 1000);
-                  try {
-                    await syncFn({
-                      reason: "cli",
-                      force: Boolean(opts.force),
-                      progress: (syncUpdate) => {
-                        if (syncUpdate.label) {
-                          lastLabel = syncUpdate.label;
-                        }
-                        lastCompleted = syncUpdate.completed;
-                        lastTotal = syncUpdate.total;
-                        update({
-                          completed: syncUpdate.completed,
-                          total: syncUpdate.total,
-                          label: buildLabel(),
-                        });
-                        progress.setLabel(buildLabel());
-                      },
-                    });
-                  } finally {
-                    clearInterval(interval);
-                  }
-                },
-              );
-              const qmdIndexSummary = await summarizeQmdIndexArtifact(manager);
-              if (qmdIndexSummary) {
-                defaultRuntime.log(qmdIndexSummary);
-              }
-              defaultRuntime.log(`Memory index updated (${agentId}).`);
-            } catch (err) {
-              const message = formatErrorMessage(err);
-              defaultRuntime.error(`Memory index failed (${agentId}): ${message}`);
-              process.exitCode = 1;
-            }
-          },
-        });
-      }
+      await runMemoryIndex(opts);
+    });
+
+  memory
+    .command("sync")
+    .description("Sync memory sources into the active backend")
+    .allowUnknownOption(false)
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--force", "Force full reindex", false)
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      await runMemoryIndex(opts);
+    });
+
+  memory
+    .command("reindex")
+    .description("Alias for `openclaw memory index`")
+    .allowUnknownOption(false)
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--force", "Force full reindex", false)
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      await runMemoryIndex(opts);
     });
 
   memory
@@ -814,4 +889,17 @@ export function registerMemoryCli(program: Command) {
         });
       },
     );
+}
+
+export function registerMemoryCli(program: Command, cfg?: OpenClawConfig) {
+  const config = cfg ?? loadConfig();
+  const memoryPlugin = resolveMemoryPluginStatus(config);
+  if (memoryPlugin.enabled && memoryPlugin.slot && memoryPlugin.slot !== "memory-core") {
+    const provider = getMemoryCliProvider(memoryPlugin.slot);
+    if (provider) {
+      provider({ program, config });
+      return;
+    }
+  }
+  registerBuiltinMemoryCli(program);
 }

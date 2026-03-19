@@ -1,0 +1,1382 @@
+import crypto from "node:crypto";
+import fsSync from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
+import { Document } from "@langchain/core/documents";
+import { OpenAIEmbeddings } from "@langchain/openai";
+import {
+  MarkdownTextSplitter,
+  RecursiveCharacterTextSplitter,
+  type SupportedTextSplitterLanguage,
+} from "@langchain/textsplitters";
+import {
+  loadSessionStore,
+  readSessionMessages,
+  resolveSessionStoreEntry,
+  resolveStorePath,
+  resolveSessionTranscriptsDirForAgent,
+  type OpenClawConfig,
+} from "openclaw/plugin-sdk/config-runtime";
+import type { PluginLogger } from "openclaw/plugin-sdk/core";
+import type {
+  MemoryEmbeddingProbeResult,
+  MemoryProviderStatus,
+  MemorySearchManager,
+  MemorySearchResult,
+  MemorySyncProgressUpdate,
+} from "openclaw/plugin-sdk/memory-core";
+import {
+  LANGCHAIN_VIRTUAL_ROOT,
+  type LangchainAgentConfig,
+  type LangchainMemoryScope,
+  type LangchainMemorySource,
+  type LangchainPluginConfig,
+  buildVirtualDocumentPath,
+  makeStableId,
+  resolveLangchainAgentConfig,
+  resolveLangchainCollectionName,
+  resolveLangchainPluginConfig,
+  resolveLangchainPluginStorageState,
+} from "./config.js";
+
+type StoredDocumentMetadata = {
+  source: LangchainMemorySource;
+  path: string;
+  title?: string;
+  subject?: string;
+  from?: string;
+  to?: string;
+  provider?: string;
+  surface?: string;
+  sessionKey?: string;
+  channelId?: string;
+  accountId?: string;
+  conversationId?: string;
+  messageId?: string;
+  threadId?: string;
+  senderId?: string;
+  senderName?: string;
+  senderUsername?: string;
+  senderE164?: string;
+  originatingChannel?: string;
+  originatingTo?: string;
+  guildId?: string;
+  channelName?: string;
+  groupId?: string;
+  groupSpace?: string;
+  timestamp?: number;
+  mimeType?: string;
+  accessTag?: string;
+  isGroup?: boolean;
+  role?: string;
+  chatType?: string;
+};
+
+type SourceDocument = {
+  source: LangchainMemorySource;
+  path: string;
+  absPath: string;
+  title: string;
+  content: string;
+  hash: string;
+  metadata: StoredDocumentMetadata;
+};
+
+type ChunkedSourceDocument = {
+  id: string;
+  pageContent: string;
+  metadata: Record<string, string | number | boolean>;
+};
+
+type ManifestEntry = {
+  source: LangchainMemorySource;
+  path: string;
+  hash: string;
+  ids: string[];
+  chunks: number;
+};
+
+type IndexManifest = {
+  version: 1;
+  documents: Record<string, ManifestEntry>;
+};
+
+type LangchainStatusFile = {
+  version: 1;
+  pluginId: "memory-langchain";
+  agentId: string;
+  updatedAt: number;
+  backendReachable: boolean;
+  backendError?: string;
+  lastError?: string;
+  lastSyncAt?: number;
+  queueDepth: number;
+  files: number;
+  chunks: number;
+  sources: LangchainMemorySource[];
+  extraPaths: string[];
+  roots: string[];
+  workspaceDir: string;
+  chromaUrl: string;
+  collectionName: string;
+  sourceCounts: Array<{ source: LangchainMemorySource; files: number; chunks: number }>;
+};
+
+type SyncReason = "cli" | "service";
+type SearchParams = {
+  query: string;
+  maxResults?: number;
+  minScore?: number;
+  sessionKey?: string;
+  sources?: LangchainMemorySource[];
+  scope?: LangchainMemoryScope;
+};
+
+const EMPTY_MANIFEST: IndexManifest = {
+  version: 1,
+  documents: {},
+};
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".proto",
+  ".py",
+  ".rb",
+  ".rs",
+  ".rst",
+  ".scala",
+  ".sol",
+  ".sql",
+  ".swift",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".yaml",
+  ".yml",
+]);
+
+const DOC_EXTENSIONS = new Set([".md", ".mdx", ".rst", ".txt", ".html"]);
+const SESSION_TRANSCRIPT_FALLBACK_DIR = "sessions-transcripts";
+const IGNORED_DIRS = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  ".venv",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "tmp",
+]);
+
+function isTruthy(value: unknown): value is true {
+  return value === true;
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeThreadId(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "number") {
+    const normalized = String(value).trim();
+    return normalized || undefined;
+  }
+  return undefined;
+}
+
+function normalizeScore(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value >= 0 && value <= 1) {
+    return value;
+  }
+  return 1 / (1 + Math.max(0, value));
+}
+
+function sanitizeSnippet(text: string): string {
+  return text
+    .replace(/<\s*\/?(system|assistant|developer|tool|function|relevant-memories)\b/gi, "[tag]")
+    .replace(/\r\n/g, "\n");
+}
+
+function ensureDirSync(dir: string): void {
+  fsSync.mkdirSync(dir, { recursive: true });
+}
+
+async function ensureDir(dir: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+}
+
+async function readJsonFile<T>(pathname: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await fs.readFile(pathname, "utf-8")) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJsonFile(pathname: string, value: unknown): Promise<void> {
+  await ensureDir(path.dirname(pathname));
+  await fs.writeFile(pathname, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+}
+
+function readPendingQueueDepth(dir: string): number {
+  try {
+    return fsSync.readdirSync(dir).filter((entry) => entry.endsWith(".json")).length;
+  } catch {
+    return 0;
+  }
+}
+
+async function listFilesRecursive(
+  dir: string,
+  filter?: (absPath: string) => boolean,
+): Promise<string[]> {
+  const results: string[] = [];
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    let entries: fsSync.Dirent[] = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const absPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRS.has(entry.name)) {
+          continue;
+        }
+        stack.push(absPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      if (filter && !filter(absPath)) {
+        continue;
+      }
+      results.push(absPath);
+    }
+  }
+  return results.toSorted();
+}
+
+function isIndexableWorkspaceFile(absPath: string): boolean {
+  const ext = path.extname(absPath).toLowerCase();
+  return TEXT_FILE_EXTENSIONS.has(ext);
+}
+
+function classifyWorkspaceSource(
+  absPath: string,
+  workspaceDir: string,
+): LangchainMemorySource | null {
+  const rel = path.relative(workspaceDir, absPath).replace(/\\/g, "/");
+  if (!rel || rel.startsWith("..")) {
+    return null;
+  }
+  if (rel === "MEMORY.md" || rel === "memory.md" || rel.startsWith("memory/")) {
+    return null;
+  }
+  const ext = path.extname(absPath).toLowerCase();
+  if (!TEXT_FILE_EXTENSIONS.has(ext)) {
+    return null;
+  }
+  return DOC_EXTENSIONS.has(ext) ? "docs" : "repo";
+}
+
+function resolveSplitter(pathname: string, cfg: LangchainPluginConfig) {
+  const ext = path.extname(pathname).toLowerCase();
+  if (ext === ".md" || ext === ".mdx" || ext === ".rst") {
+    return new MarkdownTextSplitter({
+      chunkSize: cfg.chunkSize,
+      chunkOverlap: cfg.chunkOverlap,
+    });
+  }
+  const language = resolveLanguage(pathname);
+  if (language) {
+    return RecursiveCharacterTextSplitter.fromLanguage(language, {
+      chunkSize: cfg.chunkSize,
+      chunkOverlap: cfg.chunkOverlap,
+    });
+  }
+  return new RecursiveCharacterTextSplitter({
+    chunkSize: cfg.chunkSize,
+    chunkOverlap: cfg.chunkOverlap,
+  });
+}
+
+function resolveLanguage(pathname: string): SupportedTextSplitterLanguage | null {
+  const ext = path.extname(pathname).toLowerCase();
+  switch (ext) {
+    case ".cpp":
+    case ".cc":
+    case ".cxx":
+    case ".hpp":
+    case ".h":
+      return "cpp";
+    case ".go":
+      return "go";
+    case ".java":
+      return "java";
+    case ".js":
+    case ".jsx":
+    case ".mjs":
+    case ".cjs":
+    case ".ts":
+    case ".tsx":
+      return "js";
+    case ".php":
+      return "php";
+    case ".proto":
+      return "proto";
+    case ".py":
+      return "python";
+    case ".rb":
+      return "ruby";
+    case ".rs":
+      return "rust";
+    case ".scala":
+      return "scala";
+    case ".swift":
+      return "swift";
+    case ".md":
+    case ".mdx":
+      return "markdown";
+    case ".html":
+      return "html";
+    case ".sol":
+      return "sol";
+    default:
+      return null;
+  }
+}
+
+function computeLineStarts(text: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\n") {
+      starts.push(index + 1);
+    }
+  }
+  return starts;
+}
+
+function lineNumberFromIndex(starts: number[], charIndex: number): number {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (starts[mid] <= charIndex) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return Math.max(1, high + 1);
+}
+
+async function chunkDocument(
+  document: SourceDocument,
+  cfg: LangchainPluginConfig,
+): Promise<ChunkedSourceDocument[]> {
+  const splitter = resolveSplitter(document.absPath, cfg);
+  const splitDocs = await splitter.createDocuments([document.content]);
+  const lineStarts = computeLineStarts(document.content);
+  const chunks: ChunkedSourceDocument[] = [];
+  let searchOffset = 0;
+  for (let index = 0; index < splitDocs.length; index += 1) {
+    const chunkText = splitDocs[index]?.pageContent?.trim();
+    if (!chunkText) {
+      continue;
+    }
+    const locatedAt = document.content.indexOf(chunkText, searchOffset);
+    const charStart = locatedAt >= 0 ? locatedAt : Math.min(searchOffset, document.content.length);
+    const charEnd = Math.max(charStart, charStart + chunkText.length);
+    const startLine = lineNumberFromIndex(lineStarts, charStart);
+    const endLine = lineNumberFromIndex(lineStarts, Math.max(charStart, charEnd - 1));
+    searchOffset = Math.max(charStart + 1, charEnd - Math.max(1, cfg.chunkOverlap));
+    chunks.push({
+      id: makeStableId([document.source, document.path, index]),
+      pageContent: chunkText,
+      metadata: {
+        source: document.source,
+        path: document.path,
+        title: document.title,
+        startLine,
+        endLine,
+        ...(typeof document.metadata.sessionKey === "string"
+          ? { sessionKey: document.metadata.sessionKey }
+          : {}),
+        ...(typeof document.metadata.channelId === "string"
+          ? { channelId: document.metadata.channelId }
+          : {}),
+        ...(typeof document.metadata.from === "string" ? { from: document.metadata.from } : {}),
+        ...(typeof document.metadata.to === "string" ? { to: document.metadata.to } : {}),
+        ...(typeof document.metadata.subject === "string"
+          ? { subject: document.metadata.subject }
+          : {}),
+        ...(typeof document.metadata.provider === "string"
+          ? { provider: document.metadata.provider }
+          : {}),
+        ...(typeof document.metadata.surface === "string"
+          ? { surface: document.metadata.surface }
+          : {}),
+        ...(typeof document.metadata.accountId === "string"
+          ? { accountId: document.metadata.accountId }
+          : {}),
+        ...(typeof document.metadata.conversationId === "string"
+          ? { conversationId: document.metadata.conversationId }
+          : {}),
+        ...(typeof document.metadata.messageId === "string"
+          ? { messageId: document.metadata.messageId }
+          : {}),
+        ...(typeof document.metadata.threadId === "string"
+          ? { threadId: document.metadata.threadId }
+          : {}),
+        ...(typeof document.metadata.senderId === "string"
+          ? { senderId: document.metadata.senderId }
+          : {}),
+        ...(typeof document.metadata.senderName === "string"
+          ? { senderName: document.metadata.senderName }
+          : {}),
+        ...(typeof document.metadata.senderUsername === "string"
+          ? { senderUsername: document.metadata.senderUsername }
+          : {}),
+        ...(typeof document.metadata.senderE164 === "string"
+          ? { senderE164: document.metadata.senderE164 }
+          : {}),
+        ...(typeof document.metadata.originatingChannel === "string"
+          ? { originatingChannel: document.metadata.originatingChannel }
+          : {}),
+        ...(typeof document.metadata.originatingTo === "string"
+          ? { originatingTo: document.metadata.originatingTo }
+          : {}),
+        ...(typeof document.metadata.guildId === "string"
+          ? { guildId: document.metadata.guildId }
+          : {}),
+        ...(typeof document.metadata.channelName === "string"
+          ? { channelName: document.metadata.channelName }
+          : {}),
+        ...(typeof document.metadata.groupId === "string"
+          ? { groupId: document.metadata.groupId }
+          : {}),
+        ...(typeof document.metadata.groupSpace === "string"
+          ? { groupSpace: document.metadata.groupSpace }
+          : {}),
+        ...(typeof document.metadata.timestamp === "number"
+          ? { timestamp: document.metadata.timestamp }
+          : {}),
+        ...(typeof document.metadata.mimeType === "string"
+          ? { mimeType: document.metadata.mimeType }
+          : {}),
+        ...(typeof document.metadata.accessTag === "string"
+          ? { accessTag: document.metadata.accessTag }
+          : {}),
+        ...(typeof document.metadata.role === "string" ? { role: document.metadata.role } : {}),
+        ...(typeof document.metadata.chatType === "string"
+          ? { chatType: document.metadata.chatType }
+          : {}),
+        ...(typeof document.metadata.isGroup === "boolean"
+          ? { isGroup: document.metadata.isGroup }
+          : {}),
+      },
+    });
+  }
+  return chunks;
+}
+
+function countBySource(docs: SourceDocument[], chunks: ChunkedSourceDocument[]) {
+  const bySource = new Map<LangchainMemorySource, { files: number; chunks: number }>();
+  for (const doc of docs) {
+    const current = bySource.get(doc.source) ?? { files: 0, chunks: 0 };
+    current.files += 1;
+    bySource.set(doc.source, current);
+  }
+  for (const chunk of chunks) {
+    const source = chunk.metadata.source as LangchainMemorySource;
+    const current = bySource.get(source) ?? { files: 0, chunks: 0 };
+    current.chunks += 1;
+    bySource.set(source, current);
+  }
+  return Array.from(bySource.entries())
+    .map(([source, value]) => ({ source, ...value }))
+    .toSorted((left, right) => left.source.localeCompare(right.source));
+}
+
+function buildManifestKey(source: LangchainMemorySource, relPath: string): string {
+  return `${source}::${relPath}`;
+}
+
+function buildSessionTranscriptFallbackPath(fileName: string): string {
+  return path.posix.join(LANGCHAIN_VIRTUAL_ROOT, SESSION_TRANSCRIPT_FALLBACK_DIR, fileName);
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function loadStoredDocumentMetadata(absPath: string): Promise<StoredDocumentMetadata> {
+  const metaPath = absPath.replace(/\.md$/i, ".json");
+  return await readJsonFile<StoredDocumentMetadata>(metaPath, {
+    source: "chat",
+    path: path.basename(absPath),
+  });
+}
+
+async function buildDocumentFromFile(params: {
+  source: LangchainMemorySource;
+  absPath: string;
+  workspaceDir: string;
+  virtualRoot?: string;
+}): Promise<SourceDocument | null> {
+  const content = await fs.readFile(params.absPath, "utf-8").catch(() => null);
+  if (!content || !content.trim()) {
+    return null;
+  }
+  const hash = crypto.createHash("sha256").update(content).digest("hex");
+  const relPath = params.virtualRoot
+    ? path.posix.join(params.virtualRoot, path.basename(params.absPath))
+    : path.relative(params.workspaceDir, params.absPath).replace(/\\/g, "/");
+  const metadata =
+    params.virtualRoot !== undefined
+      ? await loadStoredDocumentMetadata(params.absPath)
+      : ({
+          source: params.source,
+          path: relPath,
+          title: path.basename(params.absPath),
+        } satisfies StoredDocumentMetadata);
+  return {
+    source: params.source,
+    path: metadata.path || relPath,
+    absPath: params.absPath,
+    title: metadata.title || path.basename(params.absPath),
+    content,
+    hash,
+    metadata: {
+      ...metadata,
+      source: params.source,
+      path: metadata.path || relPath,
+    },
+  };
+}
+
+async function collectLegacyMemoryDocuments(
+  agent: LangchainAgentConfig,
+): Promise<SourceDocument[]> {
+  const docs: SourceDocument[] = [];
+  const candidates = [
+    path.join(agent.workspaceDir, "MEMORY.md"),
+    path.join(agent.workspaceDir, "memory.md"),
+  ];
+  for (const candidate of candidates) {
+    if (fsSync.existsSync(candidate)) {
+      const doc = await buildDocumentFromFile({
+        source: "memory",
+        absPath: candidate,
+        workspaceDir: agent.workspaceDir,
+      });
+      if (doc) {
+        docs.push(doc);
+      }
+    }
+  }
+  const memoryDir = path.join(agent.workspaceDir, "memory");
+  const nested = await listFilesRecursive(
+    memoryDir,
+    (absPath) => path.extname(absPath).toLowerCase() === ".md",
+  );
+  for (const absPath of nested) {
+    const doc = await buildDocumentFromFile({
+      source: "memory",
+      absPath,
+      workspaceDir: agent.workspaceDir,
+    });
+    if (doc) {
+      docs.push(doc);
+    }
+  }
+  return docs;
+}
+
+async function collectWorkspaceDocuments(agent: LangchainAgentConfig): Promise<SourceDocument[]> {
+  const docs: SourceDocument[] = [];
+  const inputs = Array.from(new Set([...agent.roots, ...agent.extraPaths]));
+  for (const input of inputs) {
+    if (!fsSync.existsSync(input)) {
+      continue;
+    }
+    const stat = await fs.stat(input).catch(() => null);
+    if (!stat) {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const files = await listFilesRecursive(input, isIndexableWorkspaceFile);
+      for (const absPath of files) {
+        const source = classifyWorkspaceSource(absPath, agent.workspaceDir);
+        if (!source) {
+          continue;
+        }
+        const doc = await buildDocumentFromFile({
+          source,
+          absPath,
+          workspaceDir: agent.workspaceDir,
+        });
+        if (doc) {
+          docs.push(doc);
+        }
+      }
+      continue;
+    }
+    if (!stat.isFile()) {
+      continue;
+    }
+    const source = classifyWorkspaceSource(input, agent.workspaceDir);
+    if (!source) {
+      continue;
+    }
+    const doc = await buildDocumentFromFile({
+      source,
+      absPath: input,
+      workspaceDir: agent.workspaceDir,
+    });
+    if (doc) {
+      docs.push(doc);
+    }
+  }
+  return docs;
+}
+
+async function collectStoredDocuments(params: {
+  source: LangchainMemorySource;
+  plugin: LangchainPluginConfig;
+  agent: LangchainAgentConfig;
+}): Promise<SourceDocument[]> {
+  const dir = path.join(params.plugin.documentsDir, params.agent.agentId, params.source);
+  const files = await listFilesRecursive(dir, (absPath) => absPath.endsWith(".md"));
+  const docs: SourceDocument[] = [];
+  for (const absPath of files) {
+    const doc = await buildDocumentFromFile({
+      source: params.source,
+      absPath,
+      workspaceDir: params.agent.workspaceDir,
+      virtualRoot: buildVirtualDocumentPath(params.source, ""),
+    });
+    if (!doc) {
+      continue;
+    }
+    const fileName = path.basename(absPath);
+    doc.path = buildVirtualDocumentPath(params.source, fileName);
+    doc.metadata.path = doc.path;
+    docs.push(doc);
+  }
+  return docs;
+}
+
+function extractTextFromTranscriptMessage(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const record = message as Record<string, unknown>;
+  if (typeof record.content === "string") {
+    return record.content.trim();
+  }
+  if (Array.isArray(record.content)) {
+    return record.content
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return "";
+        }
+        const block = entry as Record<string, unknown>;
+        if (typeof block.text === "string") {
+          return block.text.trim();
+        }
+        if (typeof block.content === "string") {
+          return block.content.trim();
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+async function collectSessionTranscriptFallbackDocuments(
+  agent: LangchainAgentConfig,
+): Promise<SourceDocument[]> {
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(agent.agentId);
+  const files = await listFilesRecursive(sessionsDir, (absPath) => absPath.endsWith(".jsonl"));
+  const docs: SourceDocument[] = [];
+  for (const absPath of files) {
+    const sessionId = path.basename(absPath, path.extname(absPath));
+    const content = buildSessionTranscriptFallbackContent(sessionId, absPath);
+    if (!content) {
+      continue;
+    }
+    docs.push({
+      source: "sessions",
+      path: buildSessionTranscriptFallbackPath(path.basename(absPath)),
+      absPath,
+      title: sessionId,
+      content,
+      hash: crypto.createHash("sha256").update(content).digest("hex"),
+      metadata: {
+        source: "sessions",
+        path: buildSessionTranscriptFallbackPath(path.basename(absPath)),
+        title: sessionId,
+        sessionKey: sessionId,
+      },
+    });
+  }
+  return docs;
+}
+
+function buildSessionTranscriptFallbackContent(
+  sessionId: string,
+  sessionFile: string,
+): string | null {
+  const messages = readSessionMessages(sessionId, undefined, sessionFile);
+  const body = messages
+    .map((message) => {
+      const role =
+        message &&
+        typeof message === "object" &&
+        typeof (message as { role?: unknown }).role === "string"
+          ? String((message as { role: string }).role)
+          : "unknown";
+      const text = extractTextFromTranscriptMessage(message);
+      return text ? `## ${role}\n${text}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (!body) {
+    return null;
+  }
+  return `# Session transcript fallback\nSession: ${sessionId}\n\n${body}\n`;
+}
+
+function resolveSessionFallbackMetadata(
+  cfg: OpenClawConfig,
+  agentId: string,
+  sessionKey: string,
+): Partial<StoredDocumentMetadata> {
+  try {
+    const storePath = resolveStorePath(cfg.session?.store, { agentId });
+    const store = loadSessionStore(storePath);
+    const { existing } = resolveSessionStoreEntry({ store, sessionKey });
+    if (!existing) {
+      return {};
+    }
+    const origin = existing.origin;
+    const delivery = existing.deliveryContext;
+    return {
+      channelId:
+        normalizeText(delivery?.channel ?? existing.lastChannel ?? existing.channel) ||
+        normalizeText(origin?.provider ?? origin?.surface) ||
+        undefined,
+      accountId:
+        normalizeText(delivery?.accountId ?? existing.lastAccountId ?? origin?.accountId) ||
+        undefined,
+      conversationId: normalizeText(delivery?.to ?? existing.lastTo ?? origin?.to) || undefined,
+      threadId: normalizeThreadId(delivery?.threadId ?? existing.lastThreadId ?? origin?.threadId),
+      senderId: normalizeText(origin?.from) || undefined,
+      provider: normalizeText(origin?.provider) || undefined,
+      surface: normalizeText(origin?.surface) || undefined,
+      groupId: normalizeText(existing.groupId) || undefined,
+      channelName: normalizeText(existing.groupChannel) || undefined,
+      title: normalizeText(existing.subject) || sessionKey,
+      accessTag: `session:${sessionKey.toLowerCase()}`,
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function collectDocuments(params: {
+  cfg: OpenClawConfig;
+  plugin: LangchainPluginConfig;
+  agent: LangchainAgentConfig;
+}): Promise<SourceDocument[]> {
+  const docs: SourceDocument[] = [];
+  if (params.agent.sources.includes("memory")) {
+    docs.push(...(await collectLegacyMemoryDocuments(params.agent)));
+  }
+  if (params.agent.sources.includes("repo") || params.agent.sources.includes("docs")) {
+    const workspaceDocs = await collectWorkspaceDocuments(params.agent);
+    docs.push(
+      ...workspaceDocs.filter((doc) =>
+        doc.source === "repo"
+          ? params.agent.sources.includes("repo")
+          : params.agent.sources.includes("docs"),
+      ),
+    );
+  }
+  if (params.agent.sources.includes("chat")) {
+    docs.push(...(await collectStoredDocuments({ ...params, source: "chat" })));
+  }
+  if (params.agent.sources.includes("email")) {
+    docs.push(...(await collectStoredDocuments({ ...params, source: "email" })));
+  }
+  if (params.agent.sources.includes("sessions")) {
+    const storedSessions = await collectStoredDocuments({ ...params, source: "sessions" });
+    docs.push(...storedSessions);
+    if (storedSessions.length === 0) {
+      const fallbackDocs = await collectSessionTranscriptFallbackDocuments(params.agent);
+      docs.push(
+        ...fallbackDocs.map((doc) => ({
+          ...doc,
+          metadata: {
+            ...doc.metadata,
+            ...resolveSessionFallbackMetadata(params.cfg, params.agent.agentId, doc.title),
+          },
+        })),
+      );
+    }
+  }
+  const deduped = new Map<string, SourceDocument>();
+  for (const doc of docs) {
+    deduped.set(buildManifestKey(doc.source, doc.path), doc);
+  }
+  return Array.from(deduped.values()).toSorted((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+}
+
+function resolveReadPath(params: {
+  agent: LangchainAgentConfig;
+  plugin: LangchainPluginConfig;
+  relPath: string;
+}): string | null {
+  const trimmed = params.relPath.trim().replace(/\\/g, "/");
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/`)) {
+    const [, source, ...rest] = trimmed.split("/");
+    if (!source || rest.length === 0) {
+      return null;
+    }
+    if (source === SESSION_TRANSCRIPT_FALLBACK_DIR) {
+      const sessionsDir = resolveSessionTranscriptsDirForAgent(params.agent.agentId);
+      const absPath = path.join(sessionsDir, rest.join("/"));
+      if (!isWithinRoot(sessionsDir, absPath)) {
+        return null;
+      }
+      return absPath;
+    }
+    const absPath = path.join(
+      params.plugin.documentsDir,
+      params.agent.agentId,
+      source,
+      rest.join("/"),
+    );
+    if (!isWithinRoot(params.plugin.documentsDir, absPath)) {
+      return null;
+    }
+    return absPath;
+  }
+  const absPath = path.resolve(params.agent.workspaceDir, trimmed);
+  if (!isWithinRoot(params.agent.workspaceDir, absPath)) {
+    return null;
+  }
+  return absPath;
+}
+
+async function deleteIds(store: Chroma, ids: string[]): Promise<void> {
+  const pending = [...ids];
+  while (pending.length > 0) {
+    const batch = pending.splice(0, 100);
+    await store.delete({ ids: batch });
+  }
+}
+
+export class LangchainMemoryManager implements MemorySearchManager {
+  constructor(
+    private readonly cfg: OpenClawConfig,
+    private readonly agentId: string,
+    private readonly workspaceDir: string,
+    private readonly logger?: PluginLogger,
+  ) {}
+
+  private async resolveRuntime() {
+    const plugin = await resolveLangchainPluginConfig({
+      cfg: this.cfg,
+      logger: this.logger,
+    });
+    const agent = resolveLangchainAgentConfig({
+      cfg: this.cfg,
+      agentId: this.agentId,
+      workspaceDir: this.workspaceDir,
+    });
+    return { plugin, agent };
+  }
+
+  private async createEmbeddings(plugin: LangchainPluginConfig) {
+    if (plugin.embeddingProvider !== "openai") {
+      throw new Error(
+        `memory-langchain only supports embeddingProvider=openai for now (received ${plugin.embeddingProvider})`,
+      );
+    }
+    if (!plugin.apiKey) {
+      throw new Error(plugin.apiKeyUnresolvedReason ?? "embedding API key missing");
+    }
+    return new OpenAIEmbeddings({
+      apiKey: plugin.apiKey,
+      model: plugin.embeddingModel,
+      batchSize: plugin.batchSize,
+    });
+  }
+
+  private async getVectorStore(plugin: LangchainPluginConfig) {
+    const embeddings = await this.createEmbeddings(plugin);
+    const collectionName = resolveLangchainCollectionName({
+      collectionPrefix: plugin.collectionPrefix,
+      agentId: this.agentId,
+    });
+    const store = new Chroma(embeddings, {
+      url: plugin.chromaUrl,
+      collectionName,
+    });
+    await store.ensureCollection();
+    return { store, collectionName };
+  }
+
+  private readStatusFile(
+    plugin: { statusPath: string },
+    agent: LangchainAgentConfig,
+  ): LangchainStatusFile | null {
+    try {
+      const parsed = JSON.parse(
+        fsSync.readFileSync(plugin.statusPath, "utf-8"),
+      ) as LangchainStatusFile;
+      if (parsed.agentId !== agent.agentId) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  status(): MemoryProviderStatus {
+    const plugin = resolveLangchainPluginStorageState({
+      cfg: this.cfg,
+      env: process.env,
+    });
+    const agent = resolveLangchainAgentConfig({
+      cfg: this.cfg,
+      agentId: this.agentId,
+      workspaceDir: this.workspaceDir,
+    });
+    const statusFile = this.readStatusFile(plugin, agent);
+    const collectionName =
+      statusFile?.collectionName ??
+      resolveLangchainCollectionName({
+        collectionPrefix: plugin.collectionPrefix,
+        agentId: agent.agentId,
+      });
+    const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
+    const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
+    const staleIndex =
+      typeof statusFile?.lastSyncAt === "number"
+        ? Date.now() - statusFile.lastSyncAt > staleThresholdMs
+        : queueDepth > 0;
+    return {
+      backend: "plugin",
+      provider: "langchain",
+      model: plugin.embeddingModel,
+      requestedProvider: plugin.embeddingProvider,
+      files: statusFile?.files ?? 0,
+      chunks: statusFile?.chunks ?? 0,
+      dirty: queueDepth > 0,
+      workspaceDir: agent.workspaceDir,
+      dbPath: plugin.chromaUrl,
+      extraPaths: agent.extraPaths,
+      sources: agent.sources,
+      sourceCounts: statusFile?.sourceCounts ?? [],
+      vector: {
+        enabled: true,
+        available: statusFile?.backendReachable ?? false,
+        ...(statusFile?.backendError ? { loadError: statusFile.backendError } : {}),
+      },
+      custom: {
+        pluginId: "memory-langchain",
+        chromaUrl: plugin.chromaUrl,
+        collectionName,
+        queueDepth,
+        lastSyncAt: statusFile?.lastSyncAt,
+        lastError: statusFile?.lastError,
+        backendError: statusFile?.backendError,
+        staleIndex,
+        roots: agent.roots,
+        syncIntervalSec: plugin.syncIntervalSec,
+      },
+    };
+  }
+
+  async buildStatus(): Promise<MemoryProviderStatus> {
+    const { plugin, agent } = await this.resolveRuntime();
+    const statusFile = this.readStatusFile(plugin, agent);
+    const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
+    const staleIndex =
+      typeof statusFile?.lastSyncAt === "number"
+        ? Date.now() - statusFile.lastSyncAt > staleThresholdMs
+        : (statusFile?.queueDepth ?? 0) > 0;
+    return {
+      backend: "plugin",
+      provider: "langchain",
+      model: plugin.embeddingModel,
+      requestedProvider: plugin.embeddingProvider,
+      files: statusFile?.files ?? 0,
+      chunks: statusFile?.chunks ?? 0,
+      dirty: (statusFile?.queueDepth ?? 0) > 0,
+      workspaceDir: agent.workspaceDir,
+      dbPath: plugin.chromaUrl,
+      extraPaths: agent.extraPaths,
+      sources: agent.sources,
+      sourceCounts: statusFile?.sourceCounts ?? [],
+      vector: {
+        enabled: true,
+        available: statusFile?.backendReachable ?? false,
+      },
+      custom: {
+        pluginId: "memory-langchain",
+        chromaUrl: plugin.chromaUrl,
+        collectionName:
+          statusFile?.collectionName ??
+          resolveLangchainCollectionName({
+            collectionPrefix: plugin.collectionPrefix,
+            agentId: agent.agentId,
+          }),
+        queueDepth: statusFile?.queueDepth ?? 0,
+        lastSyncAt: statusFile?.lastSyncAt,
+        lastError: statusFile?.lastError,
+        backendError: statusFile?.backendError,
+        staleIndex,
+        roots: agent.roots,
+        syncIntervalSec: plugin.syncIntervalSec,
+      },
+    };
+  }
+
+  async probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult> {
+    try {
+      const { plugin } = await this.resolveRuntime();
+      await this.createEmbeddings(plugin);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async probeVectorAvailability(): Promise<boolean> {
+    try {
+      const { plugin } = await this.resolveRuntime();
+      await this.getVectorStore(plugin);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async sync(params?: {
+    reason?: SyncReason;
+    force?: boolean;
+    progress?: (update: MemorySyncProgressUpdate) => void;
+  }): Promise<void> {
+    const { plugin, agent } = await this.resolveRuntime();
+    ensureDirSync(plugin.documentsDir);
+    ensureDirSync(plugin.pendingDir);
+    const { store, collectionName } = await this.getVectorStore(plugin);
+    const manifest = await readJsonFile<IndexManifest>(plugin.manifestPath, EMPTY_MANIFEST);
+    const docs = await collectDocuments({ cfg: this.cfg, plugin, agent });
+    const allChunks: ChunkedSourceDocument[] = [];
+    const nextManifest: IndexManifest = {
+      version: 1,
+      documents: {},
+    };
+    const deleteQueue: string[] = [];
+    params?.progress?.({ completed: 0, total: docs.length, label: "Scanning documents" });
+
+    if (params?.force) {
+      const allExistingIds = Object.values(manifest.documents).flatMap((entry) => entry.ids);
+      if (allExistingIds.length > 0) {
+        await deleteIds(store, allExistingIds);
+      }
+    }
+
+    for (let index = 0; index < docs.length; index += 1) {
+      const doc = docs[index];
+      const manifestKey = buildManifestKey(doc.source, doc.path);
+      const previous = params?.force ? undefined : manifest.documents[manifestKey];
+      if (previous && previous.hash === doc.hash) {
+        nextManifest.documents[manifestKey] = previous;
+        params?.progress?.({
+          completed: index + 1,
+          total: docs.length,
+          label: `Unchanged ${doc.path}`,
+        });
+        continue;
+      }
+      if (previous?.ids.length) {
+        deleteQueue.push(...previous.ids);
+      }
+      const chunked = await chunkDocument(doc, plugin);
+      allChunks.push(...chunked);
+      nextManifest.documents[manifestKey] = {
+        source: doc.source,
+        path: doc.path,
+        hash: doc.hash,
+        ids: chunked.map((chunk) => chunk.id),
+        chunks: chunked.length,
+      };
+      params?.progress?.({
+        completed: index + 1,
+        total: docs.length,
+        label: `Indexed ${doc.path}`,
+      });
+    }
+
+    if (!params?.force) {
+      for (const [manifestKey, entry] of Object.entries(manifest.documents)) {
+        if (nextManifest.documents[manifestKey]) {
+          continue;
+        }
+        deleteQueue.push(...entry.ids);
+      }
+    }
+
+    if (deleteQueue.length > 0) {
+      await deleteIds(store, Array.from(new Set(deleteQueue)));
+    }
+
+    const chunkDocs = allChunks.map(
+      (chunk) =>
+        new Document({
+          pageContent: chunk.pageContent,
+          metadata: chunk.metadata,
+        }),
+    );
+    if (chunkDocs.length > 0) {
+      await store.addDocuments(chunkDocs, {
+        ids: allChunks.map((chunk) => chunk.id),
+      });
+    }
+
+    const sourceCounts = countBySource(docs, allChunks);
+    const queueDepth = (await fs.readdir(plugin.pendingDir).catch(() => [])).filter((entry) =>
+      entry.endsWith(".json"),
+    ).length;
+    let backendReachable = true;
+    let backendError: string | undefined;
+    let chunks = 0;
+    try {
+      const collection = await store.ensureCollection();
+      chunks = await collection.count();
+    } catch (error) {
+      backendReachable = false;
+      backendError = error instanceof Error ? error.message : String(error);
+      chunks = allChunks.length;
+    }
+
+    await writeJsonFile(plugin.manifestPath, nextManifest);
+    await writeJsonFile(plugin.statusPath, {
+      version: 1,
+      pluginId: "memory-langchain",
+      agentId: agent.agentId,
+      updatedAt: Date.now(),
+      backendReachable,
+      backendError,
+      lastSyncAt: Date.now(),
+      queueDepth,
+      files: docs.length,
+      chunks,
+      sources: agent.sources,
+      extraPaths: agent.extraPaths,
+      roots: agent.roots,
+      workspaceDir: agent.workspaceDir,
+      chromaUrl: plugin.chromaUrl,
+      collectionName,
+      sourceCounts,
+      ...(params?.reason === "service" ? {} : { lastError: undefined }),
+    } satisfies LangchainStatusFile);
+  }
+
+  async search(
+    query: string,
+    opts?: {
+      maxResults?: number;
+      minScore?: number;
+      sessionKey?: string;
+      sources?: LangchainMemorySource[];
+      scope?: LangchainMemoryScope;
+    },
+  ): Promise<MemorySearchResult[]> {
+    const { plugin, agent } = await this.resolveRuntime();
+    const { store } = await this.getVectorStore(plugin);
+    const status = await this.buildStatus();
+    const allowedSources = new Set(
+      (opts?.sources?.length ? opts.sources : agent.sources).filter((source) =>
+        agent.sources.includes(source),
+      ),
+    );
+    const maxResults = Math.max(1, opts?.maxResults ?? agent.maxResults);
+    const minScore = Math.max(agent.minScore, opts?.minScore ?? agent.minScore);
+    const scope = opts?.scope ?? agent.scope;
+    const candidateLimit = Math.max(maxResults * 4, 12);
+    const dedupe = new Set<string>();
+    const mapped: MemorySearchResult[] = [];
+
+    const collect = async (filter?: Record<string, string>) => {
+      const results = await store.similaritySearchWithScore(query, candidateLimit, filter);
+      for (const [doc, rawScore] of results) {
+        const source = doc.metadata?.source as LangchainMemorySource | undefined;
+        if (!source || !allowedSources.has(source)) {
+          continue;
+        }
+        const score = normalizeScore(rawScore);
+        if (score < minScore) {
+          continue;
+        }
+        const pathValue = typeof doc.metadata?.path === "string" ? doc.metadata.path : "";
+        if (!pathValue) {
+          continue;
+        }
+        const startLine =
+          typeof doc.metadata?.startLine === "number" ? Math.trunc(doc.metadata.startLine) : 1;
+        const endLine =
+          typeof doc.metadata?.endLine === "number" ? Math.trunc(doc.metadata.endLine) : startLine;
+        const dedupeKey = `${pathValue}:${startLine}:${endLine}:${doc.pageContent}`;
+        if (dedupe.has(dedupeKey)) {
+          continue;
+        }
+        dedupe.add(dedupeKey);
+        mapped.push({
+          path: pathValue,
+          startLine,
+          endLine,
+          score,
+          snippet: sanitizeSnippet(doc.pageContent),
+          source,
+        });
+        if (mapped.length >= maxResults) {
+          return;
+        }
+      }
+    };
+
+    if (opts?.sessionKey && (scope === "session" || scope === "prefer_session")) {
+      await collect({ source: "sessions", sessionKey: opts.sessionKey });
+    }
+
+    if (mapped.length < maxResults && scope !== "session") {
+      await collect();
+    }
+
+    if (mapped.length === 0 && status.custom?.lastError) {
+      this.logger?.warn?.(
+        `memory-langchain search fallback warning: ${String(status.custom.lastError)}`,
+      );
+    }
+
+    return mapped.slice(0, maxResults);
+  }
+
+  async readFile(params: {
+    relPath: string;
+    from?: number;
+    lines?: number;
+  }): Promise<{ path: string; text: string }> {
+    const { plugin, agent } = await this.resolveRuntime();
+    if (
+      params.relPath
+        .trim()
+        .startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/${SESSION_TRANSCRIPT_FALLBACK_DIR}/`)
+    ) {
+      const absPath = resolveReadPath({
+        agent,
+        plugin,
+        relPath: params.relPath,
+      });
+      if (!absPath) {
+        throw new Error(`Unsupported memory path: ${params.relPath}`);
+      }
+      const sessionId = path.basename(absPath, path.extname(absPath));
+      const content = buildSessionTranscriptFallbackContent(sessionId, absPath);
+      if (!content) {
+        throw new Error(`Transcript fallback content unavailable: ${params.relPath}`);
+      }
+      const rows = content.split(/\r?\n/);
+      if (params.from === undefined && params.lines === undefined) {
+        return {
+          path: params.relPath,
+          text: sanitizeSnippet(content),
+        };
+      }
+      const startIndex = Math.max(0, (params.from ?? 1) - 1);
+      const endIndex =
+        params.lines !== undefined
+          ? Math.min(rows.length, startIndex + Math.max(1, params.lines))
+          : rows.length;
+      return {
+        path: params.relPath,
+        text: sanitizeSnippet(rows.slice(startIndex, endIndex).join("\n")),
+      };
+    }
+    const absPath = resolveReadPath({
+      agent,
+      plugin,
+      relPath: params.relPath,
+    });
+    if (!absPath) {
+      throw new Error(`Unsupported memory path: ${params.relPath}`);
+    }
+    const text = await fs.readFile(absPath, "utf-8");
+    if (params.from === undefined && params.lines === undefined) {
+      return {
+        path: params.relPath,
+        text: sanitizeSnippet(text),
+      };
+    }
+    const rows = text.split(/\r?\n/);
+    const startIndex = Math.max(0, (params.from ?? 1) - 1);
+    const endIndex =
+      params.lines !== undefined
+        ? Math.min(rows.length, startIndex + Math.max(1, params.lines))
+        : rows.length;
+    return {
+      path: params.relPath,
+      text: sanitizeSnippet(rows.slice(startIndex, endIndex).join("\n")),
+    };
+  }
+}

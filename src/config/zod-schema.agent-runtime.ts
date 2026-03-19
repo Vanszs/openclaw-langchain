@@ -586,7 +586,19 @@ export const AgentToolsSchema = z
 export const MemorySearchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    sources: z.array(z.union([z.literal("memory"), z.literal("sessions")])).optional(),
+    sources: z
+      .array(
+        z.union([
+          z.literal("memory"),
+          z.literal("sessions"),
+          z.literal("repo"),
+          z.literal("docs"),
+          z.literal("chat"),
+          z.literal("email"),
+        ]),
+      )
+      .optional(),
+    roots: z.array(z.string()).optional(),
     extraPaths: z.array(z.string()).optional(),
     multimodal: z
       .object({
@@ -693,6 +705,9 @@ export const MemorySearchSchema = z
       .optional(),
     query: z
       .object({
+        scope: z
+          .union([z.literal("global"), z.literal("session"), z.literal("prefer_session")])
+          .optional(),
         maxResults: z.number().int().positive().optional(),
         minScore: z.number().min(0).max(1).optional(),
         hybrid: z

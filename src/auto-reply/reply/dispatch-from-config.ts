@@ -393,10 +393,15 @@ export async function dispatchReplyFromConfig(params: {
 
   // Trigger plugin hooks (fire-and-forget)
   if (hookRunner?.hasHooks("message_received")) {
+    const pluginMessageContext = {
+      ...toPluginMessageContext(hookContext),
+      ...(sessionKey ? { sessionKey } : {}),
+      ...(sessionKey ? { agentId: resolveSessionAgentId({ sessionKey, config: cfg }) } : {}),
+    };
     fireAndForgetHook(
       hookRunner.runMessageReceived(
         toPluginMessageReceivedEvent(hookContext),
-        toPluginMessageContext(hookContext),
+        pluginMessageContext,
       ),
       "dispatch-from-config: message_received plugin hook failed",
     );

@@ -316,7 +316,9 @@ export type MemorySearchConfig = {
   /** Enable vector memory search (default: true). */
   enabled?: boolean;
   /** Sources to index and search (default: ["memory"]). */
-  sources?: Array<"memory" | "sessions">;
+  sources?: Array<"memory" | "sessions" | "repo" | "docs" | "chat" | "email">;
+  /** Root directories/files for backend-specific indexing (for example repo/docs RAG). */
+  roots?: string[];
   /** Extra paths to include in memory search (directories or .md files). */
   extraPaths?: string[];
   /** Optional multimodal file indexing for selected extra paths. */
@@ -408,6 +410,8 @@ export type MemorySearchConfig = {
   };
   /** Query behavior. */
   query?: {
+    /** Retrieval scope hint for backends that support session-vs-global recall. */
+    scope?: "global" | "session" | "prefer_session";
     maxResults?: number;
     minScore?: number;
     hybrid?: {

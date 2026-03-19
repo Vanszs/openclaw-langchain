@@ -1,7 +1,10 @@
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { normalizePluginsConfig } from "../plugins/config-state.js";
 import type { ResolvedQmdConfig } from "./backend-config.js";
 import { resolveMemoryBackendConfig } from "./backend-config.js";
+import { getMemoryManagerProvider } from "./plugin-manager-registry.js";
 import type {
   MemoryEmbeddingProbeResult,
   MemorySearchManager,
@@ -43,6 +46,39 @@ export async function getMemorySearchManager(params: {
   agentId: string;
   purpose?: "default" | "status";
 }): Promise<MemorySearchManagerResult> {
+  const plugins = normalizePluginsConfig(params.cfg.plugins);
+  const memorySlot = plugins.enabled ? plugins.slots.memory : null;
+  if (!memorySlot) {
+    return { manager: null, error: "memory plugin disabled" };
+  }
+  if (memorySlot !== "memory-core") {
+    const provider = getMemoryManagerProvider(memorySlot);
+    if (!provider) {
+      return {
+        manager: null,
+        error: `memory plugin "${memorySlot}" does not expose an OpenClaw memory manager`,
+      };
+    }
+    try {
+      const manager = await provider({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        workspaceDir: resolveAgentWorkspaceDir(params.cfg, params.agentId),
+        purpose: params.purpose,
+      });
+      if (!manager) {
+        return {
+          manager: null,
+          error: `memory plugin "${memorySlot}" returned no memory manager`,
+        };
+      }
+      return { manager };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { manager: null, error: message };
+    }
+  }
+
   const resolved = resolveMemoryBackendConfig(params);
   if (resolved.backend === "qmd" && resolved.qmd) {
     const statusOnly = params.purpose === "status";

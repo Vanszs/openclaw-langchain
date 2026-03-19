@@ -63,6 +63,7 @@ const finalizeSetupWizard = vi.hoisted(() =>
 const listChannelPlugins = vi.hoisted(() => vi.fn(() => []));
 const logConfigUpdated = vi.hoisted(() => vi.fn(() => {}));
 const setupInternalHooks = vi.hoisted(() => vi.fn(async (cfg) => cfg));
+const promptMemoryConfig = vi.hoisted(() => vi.fn(async (cfg) => cfg));
 
 const setupChannels = vi.hoisted(() => vi.fn(async (cfg) => cfg));
 const setupSkills = vi.hoisted(() => vi.fn(async (cfg) => cfg));
@@ -133,6 +134,10 @@ vi.mock("../commands/health.js", () => ({
 
 vi.mock("../commands/onboard-hooks.js", () => ({
   setupInternalHooks,
+}));
+
+vi.mock("../commands/memory-config-prompt.js", () => ({
+  promptMemoryConfig,
 }));
 
 vi.mock("../config/config.js", () => ({
@@ -594,6 +599,35 @@ describe("runSetupWizard", () => {
       expect.objectContaining({
         secretInputMode: "ref", // pragma: allowlist secret
       }),
+    );
+  });
+
+  it("can open memory / RAG setup during onboarding", async () => {
+    promptMemoryConfig.mockClear();
+    const confirm = vi.fn<WizardPrompter["confirm"]>().mockResolvedValueOnce(true);
+    const prompter = buildWizardPrompter({ confirm });
+    const runtime = createRuntime();
+
+    await runSetupWizard(
+      {
+        acceptRisk: true,
+        flow: "quickstart",
+        authChoice: "skip",
+        installDaemon: false,
+        skipProviders: true,
+        skipSkills: true,
+        skipSearch: true,
+        skipHealth: true,
+        skipUi: true,
+      },
+      runtime,
+      prompter,
+    );
+
+    expect(promptMemoryConfig).toHaveBeenCalledWith(
+      expect.any(Object),
+      "/tmp/openclaw-workspace",
+      prompter,
     );
   });
 });

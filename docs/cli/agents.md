@@ -19,6 +19,8 @@ Related:
 ```bash
 openclaw agents list
 openclaw agents add work --workspace ~/.openclaw/workspace-work
+openclaw agents add research --model anthropic/claude-opus-4-6
+openclaw agents add coding --model moonshot/kimi-k2.5
 openclaw agents bindings
 openclaw agents bind --agent work --bind telegram:ops
 openclaw agents unbind --agent work --bind telegram:ops
@@ -26,6 +28,46 @@ openclaw agents set-identity --workspace ~/.openclaw/workspace --from-identity
 openclaw agents set-identity --agent main --avatar avatars/openclaw.png
 openclaw agents delete work
 ```
+
+## Three specialist agents
+
+Use `agents add --model` when you want multiple isolated agents with different
+default models, for example one orchestrator plus dedicated research and coding
+specialists:
+
+```bash
+openclaw agents add orchestrator --model openai/gpt-5.4
+openclaw agents add research --model anthropic/claude-opus-4-6
+openclaw agents add coding --model moonshot/kimi-k2.5
+openclaw agents list --bindings
+```
+
+Then wire them together in config:
+
+```json5
+{
+  agents: {
+    defaults: {
+      subagents: {
+        maxSpawnDepth: 2,
+      },
+    },
+    list: [
+      {
+        id: "orchestrator",
+        default: true,
+        model: "openai/gpt-5.4",
+        subagents: { allowAgents: ["research", "coding"] },
+      },
+      { id: "research", model: "anthropic/claude-opus-4-6" },
+      { id: "coding", model: "moonshot/kimi-k2.5" },
+    ],
+  },
+}
+```
+
+`openclaw configure --section model` sets the global catalog and credentials.
+Per-agent specialization stays under `agents.list[].model`.
 
 ## Routing bindings
 

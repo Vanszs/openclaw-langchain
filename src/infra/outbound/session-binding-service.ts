@@ -77,7 +77,7 @@ export type SessionBindingService = {
 };
 
 export type SessionBindingAdapterCapabilities = {
-  placements?: SessionBindingPlacement[];
+  placements?: readonly SessionBindingPlacement[];
   bindSupported?: boolean;
   unbindSupported?: boolean;
 };

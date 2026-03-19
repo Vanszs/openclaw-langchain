@@ -384,13 +384,15 @@ export async function statusCommand(
     }
     if (!memory) {
       const slot = memoryPlugin.slot ? `plugin ${memoryPlugin.slot}` : "plugin";
-      // Custom (non-built-in) memory plugins can't be probed — show enabled, not unavailable
-      if (memoryPlugin.slot && memoryPlugin.slot !== "memory-core") {
-        return `enabled (${slot})`;
-      }
       return muted(`enabled (${slot}) · unavailable`);
     }
     const parts: string[] = [];
+    const pluginCustom = (memory.custom ?? {}) as {
+      collectionName?: unknown;
+      queueDepth?: unknown;
+      lastSyncAt?: unknown;
+      staleIndex?: unknown;
+    };
     const dirtySuffix = memory.dirty ? ` · ${warn("dirty")}` : "";
     parts.push(`${memory.files} files · ${memory.chunks} chunks${dirtySuffix}`);
     if (memory.sources?.length) {
@@ -417,6 +419,18 @@ export async function statusCommand(
     if (cache) {
       const summary = resolveMemoryCacheSummary(cache);
       parts.push(colorByTone(summary.tone, summary.text));
+    }
+    if (typeof pluginCustom.collectionName === "string" && pluginCustom.collectionName.trim()) {
+      parts.push(`collection ${pluginCustom.collectionName}`);
+    }
+    if (typeof pluginCustom.queueDepth === "number") {
+      parts.push(`queue ${pluginCustom.queueDepth}`);
+    }
+    if (typeof pluginCustom.lastSyncAt === "number" && Number.isFinite(pluginCustom.lastSyncAt)) {
+      parts.push(`last sync ${formatTimeAgo(Date.now() - pluginCustom.lastSyncAt)} ago`);
+    }
+    if (pluginCustom.staleIndex === true) {
+      parts.push(warn("stale"));
     }
     return parts.join(" · ");
   })();

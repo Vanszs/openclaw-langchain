@@ -465,13 +465,12 @@ export function resolveControlUiLinks(params: {
   const port = params.port;
   const bind = params.bind ?? "loopback";
   const customBindHost = params.customBindHost?.trim();
-  const tailnetIPv4 = pickPrimaryTailnetIPv4();
   const host = (() => {
     if (bind === "custom" && customBindHost && isValidIPv4(customBindHost)) {
       return customBindHost;
     }
-    if (bind === "tailnet" && tailnetIPv4) {
-      return tailnetIPv4 ?? "127.0.0.1";
+    if (bind === "tailnet") {
+      return pickPrimaryTailnetIPv4() ?? "127.0.0.1";
     }
     if (bind === "lan") {
       return pickPrimaryLanIPv4() ?? "127.0.0.1";

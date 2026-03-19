@@ -15,6 +15,7 @@ import {
 import type { OnboardOptions } from "../onboard-types.js";
 import { inferAuthChoiceFromFlags } from "./local/auth-choice-inference.js";
 import { applyNonInteractiveGatewayConfig } from "./local/gateway-config.js";
+import { applyNonInteractiveMemoryConfig } from "./local/memory-config.js";
 import {
   type GatewayHealthFailureDiagnostics,
   logNonInteractiveOnboardingFailure,
@@ -122,6 +123,17 @@ export async function runNonInteractiveLocalSetup(params: {
     return;
   }
   nextConfig = gatewayResult.nextConfig;
+
+  const nextConfigAfterMemory = applyNonInteractiveMemoryConfig({
+    nextConfig,
+    opts,
+    runtime,
+    workspaceDir,
+  });
+  if (!nextConfigAfterMemory) {
+    return;
+  }
+  nextConfig = nextConfigAfterMemory;
 
   nextConfig = applyNonInteractiveSkillsConfig({ nextConfig, opts, runtime });
 
@@ -255,6 +267,7 @@ export async function runNonInteractiveLocalSetup(params: {
     daemonInstall: daemonInstallStatus,
     daemonRuntime: opts.installDaemon ? daemonRuntimeRaw : undefined,
     skipSkills: Boolean(opts.skipSkills),
+    memoryBackend: opts.memoryBackend,
     skipHealth: Boolean(opts.skipHealth),
   });
 

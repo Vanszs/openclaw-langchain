@@ -362,6 +362,28 @@ describe("memory cli", () => {
     expect(log).toHaveBeenCalledWith("Memory index updated (main).");
   });
 
+  it("supports memory sync as an index alias", async () => {
+    const close = vi.fn(async () => {});
+    const sync = vi.fn(async () => {});
+    mockManager({ sync, close });
+
+    await runMemoryCli(["sync"]);
+
+    expectCliSync(sync);
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("supports memory reindex as an index alias", async () => {
+    const close = vi.fn(async () => {});
+    const sync = vi.fn(async () => {});
+    mockManager({ sync, close });
+
+    await runMemoryCli(["reindex"]);
+
+    expectCliSync(sync);
+    expect(close).toHaveBeenCalled();
+  });
+
   it("logs qmd index file path and size after index", async () => {
     const close = vi.fn(async () => {});
     const sync = vi.fn(async () => {});

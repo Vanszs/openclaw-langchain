@@ -177,7 +177,7 @@ function loadSessionStoreFixture(): Record<string, SessionEntry> {
       }
       return toSessionEntry(key, sessionStore[key]);
     },
-  });
+  }) as unknown as Record<string, SessionEntry>;
 }
 
 vi.mock("./subagent-registry.js", () => subagentRegistryMock);

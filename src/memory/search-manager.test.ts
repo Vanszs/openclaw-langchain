@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  clearMemoryManagerProvidersForTests,
+  registerMemoryManagerProvider,
+} from "./plugin-manager-registry.js";
 
 function createManagerStatus(params: {
   backend: "qmd" | "builtin";
@@ -141,6 +145,7 @@ async function createFailedQmdSearchHarness(params: { agentId: string; errorMess
 
 beforeEach(async () => {
   await closeAllMemorySearchManagers();
+  clearMemoryManagerProvidersForTests();
   mockPrimary.search.mockClear();
   mockPrimary.readFile.mockClear();
   mockPrimary.status.mockClear();
@@ -162,6 +167,30 @@ beforeEach(async () => {
 });
 
 describe("getMemorySearchManager caching", () => {
+  it("uses the active memory-slot provider when a plugin manager is registered", async () => {
+    const pluginManager = createManagerMock({
+      backend: "builtin",
+      provider: "langchain",
+      model: "text-embedding-3-small",
+      requestedProvider: "openai",
+    });
+    registerMemoryManagerProvider("memory-langchain", async () => pluginManager);
+    const cfg: OpenClawConfig = {
+      plugins: {
+        slots: {
+          memory: "memory-langchain",
+        },
+      },
+      agents: { list: [{ id: "main", default: true, workspace: "/tmp/workspace" }] },
+    };
+
+    const result = await getMemorySearchManager({ cfg, agentId: "main" });
+
+    expect(result.manager).toBe(pluginManager);
+    expect(createQmdManagerMock).not.toHaveBeenCalled();
+    expect(mockMemoryIndexGet).not.toHaveBeenCalled();
+  });
+
   it("reuses the same QMD manager instance for repeated calls", async () => {
     const cfg = createQmdCfg("main");
 

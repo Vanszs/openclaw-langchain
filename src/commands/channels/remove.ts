@@ -119,6 +119,7 @@ export async function channelsRemoveCommand(
     runtime.exit(1);
     return;
   }
+
   const resolvedAccountId =
     normalizeAccountId(accountId) ?? resolveChannelDefaultAccountId({ plugin, cfg });
   const accountKey = resolvedAccountId || DEFAULT_ACCOUNT_ID;
@@ -127,7 +128,7 @@ export async function channelsRemoveCommand(
   const prevCfg = cfg;
   if (deleteConfig) {
     if (!plugin.config.deleteAccount) {
-      runtime.error(`Channel ${channel} does not support delete.`);
+      runtime.error(`Channel ${resolvedChannel} does not support delete.`);
       runtime.exit(1);
       return;
     }
@@ -142,7 +143,7 @@ export async function channelsRemoveCommand(
     });
   } else {
     if (!plugin.config.setAccountEnabled) {
-      runtime.error(`Channel ${channel} does not support disable.`);
+      runtime.error(`Channel ${resolvedChannel} does not support disable.`);
       runtime.exit(1);
       return;
     }

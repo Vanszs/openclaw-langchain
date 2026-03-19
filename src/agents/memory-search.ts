@@ -112,7 +112,7 @@ const DEFAULT_CACHE_ENABLED = true;
 const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
 
 function normalizeSources(
-  sources: Array<"memory" | "sessions"> | undefined,
+  sources: Array<"memory" | "sessions" | "repo" | "docs" | "chat" | "email"> | undefined,
   sessionMemoryEnabled: boolean,
 ): Array<"memory" | "sessions"> {
   const normalized = new Set<"memory" | "sessions">();

@@ -290,6 +290,9 @@ export function toPluginMessageReceivedEvent(
       to: canonical.to,
       provider: canonical.provider,
       surface: canonical.surface,
+      body: canonical.body,
+      bodyForAgent: canonical.bodyForAgent,
+      transcript: canonical.transcript,
       threadId: canonical.threadId,
       originatingChannel: canonical.originatingChannel,
       originatingTo: canonical.originatingTo,
@@ -298,8 +301,12 @@ export function toPluginMessageReceivedEvent(
       senderName: canonical.senderName,
       senderUsername: canonical.senderUsername,
       senderE164: canonical.senderE164,
+      mediaPath: canonical.mediaPath,
+      mediaType: canonical.mediaType,
       guildId: canonical.guildId,
       channelName: canonical.channelName,
+      isGroup: canonical.isGroup,
+      groupId: canonical.groupId,
     },
   };
 }

@@ -36,6 +36,7 @@ export function logNonInteractiveOnboardingJson(params: {
   };
   daemonRuntime?: string;
   skipSkills?: boolean;
+  memoryBackend?: string;
   skipHealth?: boolean;
 }) {
   if (!params.opts.json) {
@@ -53,6 +54,7 @@ export function logNonInteractiveOnboardingJson(params: {
         daemonInstall: params.daemonInstall,
         daemonRuntime: params.daemonRuntime,
         skipSkills: Boolean(params.skipSkills),
+        memoryBackend: params.memoryBackend,
         skipHealth: Boolean(params.skipHealth),
       },
       null,

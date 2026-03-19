@@ -12,6 +12,7 @@
   "channel-setup",
   "setup-tools",
   "config-runtime",
+  "memory-core",
   "reply-runtime",
   "reply-payload",
   "channel-reply-pipeline",

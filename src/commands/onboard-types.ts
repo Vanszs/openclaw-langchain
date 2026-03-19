@@ -162,6 +162,16 @@ export type OnboardOptions = {
   skipProviders?: boolean;
   skipSkills?: boolean;
   skipSearch?: boolean;
+  memoryBackend?: "memory-core" | "memory-langchain" | "none";
+  memoryChromaUrl?: string;
+  memoryCollectionPrefix?: string;
+  memoryEmbeddingProvider?: string;
+  memoryEmbeddingModel?: string;
+  memoryApiKeySecretRef?: string;
+  memorySources?: string;
+  memoryRoots?: string;
+  memoryExtraPaths?: string;
+  memoryScope?: "global" | "session" | "prefer_session";
   skipHealth?: boolean;
   skipUi?: boolean;
   nodeManager?: NodeManagerChoice;

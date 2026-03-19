@@ -112,6 +112,15 @@ describe("resolveControlUiLinks", () => {
     expect(links.httpUrl).toBe("http://127.0.0.1:18789/");
     expect(links.wsUrl).toBe("ws://127.0.0.1:18789");
   });
+
+  it("does not query tailnet addresses for loopback bind", () => {
+    mocks.pickPrimaryTailnetIPv4.mockClear();
+    resolveControlUiLinks({
+      port: 18789,
+      bind: "loopback",
+    });
+    expect(mocks.pickPrimaryTailnetIPv4).not.toHaveBeenCalled();
+  });
 });
 
 describe("normalizeGatewayTokenInput", () => {

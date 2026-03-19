@@ -1412,6 +1412,7 @@ scripts/sandbox-browser-setup.sh   # optional browser image
 - `identity.avatar`: workspace-relative path, `http(s)` URL, or `data:` URI.
 - `identity` derives defaults: `ackReaction` from `emoji`, `mentionPatterns` from `name`/`emoji`.
 - `subagents.allowAgents`: allowlist of agent ids for `sessions_spawn` (`["*"]` = any; default: same agent only).
+- `subagents.model`: optional default model for child sessions spawned under this agent. When unset, OpenClaw falls back to `agents.defaults.subagents.model`, then to the target agent's own `model`.
 - Sandbox inheritance guard: if the requester session is sandboxed, `sessions_spawn` rejects targets that would run unsandboxed.
 
 ---
@@ -2427,6 +2428,13 @@ See [Local Models](/gateway/local-models). TL;DR: run MiniMax M2.5 via LM Studio
 - `plugins.entries.<id>.config`: plugin-defined config object (validated by native OpenClaw plugin schema when available).
 - Enabled Claude bundle plugins can also contribute embedded Pi defaults from `settings.json`; OpenClaw applies those as sanitized agent settings, not as raw OpenClaw config patches.
 - `plugins.slots.memory`: pick the active memory plugin id, or `"none"` to disable memory plugins.
+- `plugins.entries.memory-langchain.config`: LangChain + Chroma memory backend settings when `plugins.slots.memory = "memory-langchain"`.
+  - `chromaUrl`: Chroma HTTP endpoint.
+  - `collectionPrefix`: collection name prefix for agent-scoped indexes.
+  - `embeddingProvider`: LangChain embedding provider id (v1 currently expects `openai`).
+  - `embeddingModel`: embedding model id such as `text-embedding-3-small`.
+  - `apiKeySecretRef`: plaintext, `${ENV_VAR}`, or SecretRef for the embedding API key.
+  - `chunkSize`, `chunkOverlap`, `batchSize`, `syncIntervalSec`, `queueDir`: ingest and queue tuning.
 - `plugins.slots.contextEngine`: pick the active context engine plugin id; defaults to `"legacy"` unless you install and select another engine.
 - `plugins.installs`: CLI-managed install metadata used by `openclaw plugins update`.
   - Includes `source`, `spec`, `sourcePath`, `installPath`, `version`, `resolvedName`, `resolvedVersion`, `resolvedSpec`, `integrity`, `shasum`, `resolvedAt`, `installedAt`.

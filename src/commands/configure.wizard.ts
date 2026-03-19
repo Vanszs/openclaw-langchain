@@ -10,6 +10,7 @@ import { defaultRuntime } from "../runtime.js";
 import { note } from "../terminal/note.js";
 import { resolveUserPath } from "../utils.js";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
+import type { WizardSelectParams, WizardTextParams } from "../wizard/prompts.js";
 import { WizardCancelledError } from "../wizard/prompts.js";
 import { resolveSetupSecretInputString } from "../wizard/setup.secret-input.js";
 import { removeChannelConfigWizard } from "./configure.channels.js";
@@ -31,6 +32,7 @@ import {
 } from "./configure.shared.js";
 import { formatHealthCheckFailure } from "./health-format.js";
 import { healthCommand } from "./health.js";
+import { promptMemoryConfig as promptSharedMemoryConfig } from "./memory-config-prompt.js";
 import { noteChannelStatus, setupChannels } from "./onboard-channels.js";
 import {
   applyWizardMetadata,
@@ -135,6 +137,19 @@ async function promptConfigureSection(
       initialValue: CONFIGURE_SECTION_OPTIONS[0]?.value,
     }),
     runtime,
+  );
+}
+
+function noteModelSectionScope(cfg: OpenClawConfig) {
+  const agentCount = Array.isArray(cfg.agents?.list) ? cfg.agents.list.length : 0;
+  note(
+    [
+      "This section configures global model credentials and agent defaults.",
+      agentCount > 1
+        ? "Per-agent specialization still lives under agents.list[].model or `openclaw agents add <id> --model ...`."
+        : "If you later split into multiple specialist agents, set each one with `openclaw agents add <id> --model ...` or `agents.list[].model`.",
+    ].join("\n"),
+    "Model scope",
   );
 }
 
@@ -304,6 +319,41 @@ async function promptWebToolsConfig(
       },
     },
   };
+}
+
+async function promptMemoryConfig(
+  nextConfig: OpenClawConfig,
+  workspaceDir: string,
+  runtime: RuntimeEnv,
+): Promise<OpenClawConfig> {
+  return await promptSharedMemoryConfig(nextConfig, workspaceDir, {
+    note: async (message, title) => {
+      note(message, title);
+    },
+    select: async <T>(params: WizardSelectParams<T>) =>
+      guardCancel(
+        await select<T>({
+          message: params.message,
+          options: params.options as Parameters<typeof select<T>>[0]["options"],
+          initialValue: params.initialValue,
+        }),
+        runtime,
+      ),
+    text: async (params: WizardTextParams) => {
+      const validate = params.validate;
+      return guardCancel(
+        await text({
+          message: params.message,
+          initialValue: params.initialValue,
+          placeholder: params.placeholder,
+          validate: validate
+            ? (value) => validate(typeof value === "string" ? value : "")
+            : undefined,
+        }),
+        runtime,
+      );
+    },
+  });
 }
 
 export async function runConfigureWizard(
@@ -526,7 +576,12 @@ export async function runConfigureWizard(
       }
 
       if (selected.includes("model")) {
+        noteModelSectionScope(nextConfig);
         nextConfig = await promptAuthConfig(nextConfig, runtime, prompter);
+      }
+
+      if (selected.includes("memory")) {
+        nextConfig = await promptMemoryConfig(nextConfig, workspaceDir, runtime);
       }
 
       if (selected.includes("web")) {
@@ -578,7 +633,13 @@ export async function runConfigureWizard(
         }
 
         if (choice === "model") {
+          noteModelSectionScope(nextConfig);
           nextConfig = await promptAuthConfig(nextConfig, runtime, prompter);
+          await persistConfig();
+        }
+
+        if (choice === "memory") {
+          nextConfig = await promptMemoryConfig(nextConfig, workspaceDir, runtime);
           await persistConfig();
         }
 

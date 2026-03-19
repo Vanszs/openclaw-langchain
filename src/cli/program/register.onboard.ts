@@ -134,6 +134,22 @@ export function registerOnboardCommand(program: Command) {
     .option("--skip-channels", "Skip channel setup")
     .option("--skip-skills", "Skip skills setup")
     .option("--skip-search", "Skip search provider setup")
+    .option("--memory-backend <id>", "Memory backend: memory-core|memory-langchain|none")
+    .option("--memory-chroma-url <url>", "Chroma URL for memory-langchain")
+    .option("--memory-collection-prefix <prefix>", "Collection prefix for memory-langchain")
+    .option(
+      "--memory-embedding-provider <id>",
+      "Embedding provider for memory-langchain (currently: openai)",
+    )
+    .option("--memory-embedding-model <id>", "Embedding model for memory-langchain")
+    .option(
+      "--memory-api-key-secret-ref <value>",
+      "Embedding API key or SecretRef string for memory-langchain",
+    )
+    .option("--memory-sources <list>", "Comma-separated memory sources to index")
+    .option("--memory-roots <list>", "Comma-separated roots to index")
+    .option("--memory-extra-paths <list>", "Comma-separated extra paths to index")
+    .option("--memory-scope <scope>", "Memory recall scope: global|session|prefer_session")
     .option("--skip-health", "Skip health check")
     .option("--skip-ui", "Skip Control UI/TUI prompts")
     .option("--node-manager <name>", "Node manager for skills: npm|pnpm|bun")
@@ -181,6 +197,20 @@ export function registerOnboardCommand(program: Command) {
           gatewayPassword: opts.gatewayPassword as string | undefined,
           remoteUrl: opts.remoteUrl as string | undefined,
           remoteToken: opts.remoteToken as string | undefined,
+          memoryBackend: opts.memoryBackend as
+            | "memory-core"
+            | "memory-langchain"
+            | "none"
+            | undefined,
+          memoryChromaUrl: opts.memoryChromaUrl as string | undefined,
+          memoryCollectionPrefix: opts.memoryCollectionPrefix as string | undefined,
+          memoryEmbeddingProvider: opts.memoryEmbeddingProvider as string | undefined,
+          memoryEmbeddingModel: opts.memoryEmbeddingModel as string | undefined,
+          memoryApiKeySecretRef: opts.memoryApiKeySecretRef as string | undefined,
+          memorySources: opts.memorySources as string | undefined,
+          memoryRoots: opts.memoryRoots as string | undefined,
+          memoryExtraPaths: opts.memoryExtraPaths as string | undefined,
+          memoryScope: opts.memoryScope as "global" | "session" | "prefer_session" | undefined,
           tailscale: opts.tailscale as TailscaleMode | undefined,
           tailscaleResetOnExit: Boolean(opts.tailscaleResetOnExit),
           reset: Boolean(opts.reset),

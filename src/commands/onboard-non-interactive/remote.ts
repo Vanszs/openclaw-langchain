@@ -5,6 +5,7 @@ import { logConfigUpdated } from "../../config/logging.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { applyWizardMetadata } from "../onboard-helpers.js";
 import type { OnboardOptions } from "../onboard-types.js";
+import { hasNonInteractiveMemoryConfig } from "./local/memory-config.js";
 
 export async function runNonInteractiveRemoteSetup(params: {
   opts: OnboardOptions;
@@ -13,6 +14,14 @@ export async function runNonInteractiveRemoteSetup(params: {
 }) {
   const { opts, runtime, baseConfig } = params;
   const mode = "remote" as const;
+
+  if (hasNonInteractiveMemoryConfig(opts)) {
+    runtime.error(
+      "Memory/RAG flags are only supported for local non-interactive onboarding. Configure the remote gateway itself instead.",
+    );
+    runtime.exit(1);
+    return;
+  }
 
   const remoteUrl = opts.remoteUrl?.trim();
   if (!remoteUrl) {

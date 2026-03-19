@@ -200,6 +200,100 @@ describe("onboard (non-interactive): gateway and remote auth", () => {
     });
   }, 60_000);
 
+  it("writes memory-langchain config in non-interactive local setup", async () => {
+    await withStateDir("state-noninteractive-memory-", async (stateDir) => {
+      const workspace = path.join(stateDir, "openclaw");
+
+      await runNonInteractiveSetup(
+        {
+          nonInteractive: true,
+          mode: "local",
+          workspace,
+          authChoice: "skip",
+          skipSkills: true,
+          skipHealth: true,
+          installDaemon: false,
+          gatewayBind: "loopback",
+          memoryBackend: "memory-langchain",
+          memoryChromaUrl: "http://127.0.0.1:8000",
+          memoryCollectionPrefix: "team",
+          memoryEmbeddingProvider: "openai",
+          memoryEmbeddingModel: "text-embedding-3-small",
+          memoryApiKeySecretRef: "${OPENAI_API_KEY}",
+          memorySources: "repo, docs, chat, email, sessions",
+          memoryRoots: `${workspace}, /srv/shared-docs`,
+          memoryExtraPaths: "/srv/mail-exports",
+          memoryScope: "prefer_session",
+        },
+        runtime,
+      );
+
+      const configPath = resolveStateConfigPath(process.env, stateDir);
+      const cfg = await readJsonFile<{
+        plugins?: {
+          slots?: { memory?: string };
+          entries?: {
+            "memory-langchain"?: {
+              enabled?: boolean;
+              config?: {
+                chromaUrl?: string;
+                collectionPrefix?: string;
+                embeddingProvider?: string;
+                embeddingModel?: string;
+                apiKeySecretRef?: string;
+              };
+            };
+          };
+        };
+        agents?: {
+          defaults?: {
+            memorySearch?: {
+              sources?: string[];
+              roots?: string[];
+              extraPaths?: string[];
+              query?: { scope?: string };
+            };
+          };
+        };
+      }>(configPath);
+
+      expect(cfg.plugins?.slots?.memory).toBe("memory-langchain");
+      expect(cfg.plugins?.entries?.["memory-langchain"]?.enabled).toBe(true);
+      expect(cfg.plugins?.entries?.["memory-langchain"]?.config).toMatchObject({
+        chromaUrl: "http://127.0.0.1:8000",
+        collectionPrefix: "team",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        apiKeySecretRef: "${OPENAI_API_KEY}",
+      });
+      expect(cfg.agents?.defaults?.memorySearch).toMatchObject({
+        sources: ["repo", "docs", "chat", "email", "sessions"],
+        roots: [workspace, "/srv/shared-docs"],
+        extraPaths: ["/srv/mail-exports"],
+        query: { scope: "prefer_session" },
+      });
+    });
+  }, 60_000);
+
+  it("rejects memory flags in non-interactive remote mode", async () => {
+    await withStateDir("state-remote-memory-reject-", async () => {
+      await expect(
+        runNonInteractiveSetup(
+          {
+            nonInteractive: true,
+            mode: "remote",
+            remoteUrl: "ws://127.0.0.1:18789",
+            memoryBackend: "memory-langchain",
+            json: true,
+          },
+          runtime,
+        ),
+      ).rejects.toThrow(
+        /Memory\/RAG flags are only supported for local non-interactive onboarding/i,
+      );
+    });
+  }, 60_000);
+
   it("uses OPENCLAW_GATEWAY_TOKEN when --gateway-token is omitted", async () => {
     await withStateDir("state-env-token-", async (stateDir) => {
       const envToken = "tok_env_fallback_123";

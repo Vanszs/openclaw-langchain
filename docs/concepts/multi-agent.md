@@ -129,6 +129,70 @@ With **multiple agents**, each `agentId` becomes a **fully isolated persona**:
 
 This lets **multiple people** share one Gateway server while keeping their AI “brains” and data isolated.
 
+## Orchestrator + specialist agents
+
+You can also use multi-agent routing as a lightweight orchestrator pattern:
+one front-door agent handles the user conversation, then delegates to specialist
+agents with different default models.
+
+Typical split:
+
+- `orchestrator`: general chat + routing
+- `research`: higher-quality reasoning / long-context analysis
+- `coding`: code-heavy tasks on a coding-tuned model
+
+Example:
+
+```json5
+{
+  agents: {
+    defaults: {
+      models: {
+        "openai/gpt-5.4": {},
+        "anthropic/claude-opus-4-6": {},
+        "moonshot/kimi-k2.5": {},
+      },
+      subagents: {
+        maxSpawnDepth: 2,
+      },
+    },
+    list: [
+      {
+        id: "orchestrator",
+        default: true,
+        workspace: "~/.openclaw/workspace-orchestrator",
+        model: "openai/gpt-5.4",
+        subagents: { allowAgents: ["research", "coding"] },
+      },
+      {
+        id: "research",
+        workspace: "~/.openclaw/workspace-research",
+        model: {
+          primary: "anthropic/claude-opus-4-6",
+          fallbacks: ["openai/gpt-5.4"],
+        },
+      },
+      {
+        id: "coding",
+        workspace: "~/.openclaw/workspace-coding",
+        model: "moonshot/kimi-k2.5",
+      },
+    ],
+  },
+  bindings: [{ agentId: "orchestrator", match: { channel: "whatsapp", accountId: "default" } }],
+}
+```
+
+How it works:
+
+- inbound user messages route to `orchestrator`
+- `orchestrator` can spawn only `research` and `coding`
+- spawned sessions use the target agent's configured model by default
+- each specialist keeps its own workspace, auth, and session history
+
+Use `openclaw agents add <id> --model <provider/model>` for the initial setup,
+then refine `agents.list[].subagents.allowAgents` and `bindings`.
+
 ## One WhatsApp number, multiple people (DM split)
 
 You can route **different WhatsApp DMs** to different agents while staying on **one WhatsApp account**. Match on sender E.164 (like `+15551234567`) with `peer.kind: "direct"`. Replies still come from the same WhatsApp number (no per‑agent sender identity).

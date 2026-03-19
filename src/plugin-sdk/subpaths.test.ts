@@ -15,6 +15,7 @@ import * as discordSdk from "openclaw/plugin-sdk/discord";
 import * as imessageSdk from "openclaw/plugin-sdk/imessage";
 import * as imessageCoreSdk from "openclaw/plugin-sdk/imessage-core";
 import * as lazyRuntimeSdk from "openclaw/plugin-sdk/lazy-runtime";
+import * as memoryCoreSdk from "openclaw/plugin-sdk/memory-core";
 import * as ollamaSetupSdk from "openclaw/plugin-sdk/ollama-setup";
 import * as providerModelsSdk from "openclaw/plugin-sdk/provider-models";
 import * as providerSetupSdk from "openclaw/plugin-sdk/provider-setup";
@@ -98,6 +99,12 @@ describe("plugin-sdk subpath exports", () => {
 
   it("exports runtime helpers from the dedicated subpath", () => {
     expect(typeof runtimeSdk.createLoggerBackedRuntime).toBe("function");
+  });
+
+  it("exports memory-core helpers from the dedicated subpath", () => {
+    expect(typeof memoryCoreSdk.emptyPluginConfigSchema).toBe("function");
+    expect(typeof memoryCoreSdk.registerMemoryManagerProvider).toBe("function");
+    expect(typeof memoryCoreSdk.registerMemoryCliProvider).toBe("function");
   });
 
   it("exports directory runtime helpers from the dedicated subpath", () => {

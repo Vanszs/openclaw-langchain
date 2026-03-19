@@ -629,6 +629,88 @@ terms before depending on subscription auth.
 }
 ```
 
+### LangChain + Chroma memory with three specialist agents
+
+```json5
+{
+  plugins: {
+    slots: {
+      memory: "memory-langchain",
+    },
+    entries: {
+      "memory-langchain": {
+        enabled: true,
+        config: {
+          chromaUrl: "http://127.0.0.1:8000",
+          collectionPrefix: "openclaw",
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          apiKeySecretRef: "${OPENAI_API_KEY}",
+          chunkSize: 900,
+          chunkOverlap: 150,
+          batchSize: 32,
+          syncIntervalSec: 300,
+        },
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      models: {
+        "openai/gpt-5.4": {},
+        "anthropic/claude-opus-4-6": {},
+        "moonshot/kimi-k2.5": {},
+      },
+      subagents: {
+        maxSpawnDepth: 2,
+      },
+      memorySearch: {
+        enabled: true,
+        sources: ["repo", "docs", "chat", "email", "sessions"],
+        roots: ["~/Projects/agent47"],
+        extraPaths: ["~/team-docs", "~/mail-exports"],
+        query: {
+          scope: "prefer_session",
+          maxResults: 8,
+        },
+      },
+    },
+    list: [
+      {
+        id: "orchestrator",
+        default: true,
+        workspace: "~/.openclaw/workspace-orchestrator",
+        model: "openai/gpt-5.4",
+        subagents: { allowAgents: ["research", "coding"] },
+      },
+      {
+        id: "research",
+        workspace: "~/.openclaw/workspace-research",
+        model: "anthropic/claude-opus-4-6",
+        memorySearch: {
+          sources: ["docs", "chat", "email", "sessions"],
+          query: { scope: "global", maxResults: 10 },
+        },
+      },
+      {
+        id: "coding",
+        workspace: "~/.openclaw/workspace-coding",
+        model: "moonshot/kimi-k2.5",
+        memorySearch: {
+          sources: ["repo", "docs", "sessions"],
+          roots: ["~/Projects/agent47"],
+          query: { scope: "prefer_session", maxResults: 12 },
+        },
+      },
+    ],
+  },
+  bindings: [{ agentId: "orchestrator", match: { channel: "whatsapp", accountId: "default" } }],
+}
+```
+
+This keeps OpenClaw as the gateway and orchestration layer, while
+`memory-langchain` handles chunking, embeddings, Chroma storage, and retrieval.
+
 ## Tips
 
 - If you set `dmPolicy: "open"`, the matching `allowFrom` list must include `"*"`.

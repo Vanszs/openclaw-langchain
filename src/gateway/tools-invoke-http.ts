@@ -191,7 +191,7 @@ export async function handleToolsInvokeHttpRequest(
           type: "invalid_request",
           message:
             `memory tools are disabled in tests${suffix}. ` +
-            'Enable by setting plugins.slots.memory="memory-core" (and ensure plugins.enabled is not false).',
+            'Enable by setting plugins.slots.memory to an installed memory plugin (for example "memory-core") and ensure plugins.enabled is not false.',
         },
       });
       return true;

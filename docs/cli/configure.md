@@ -7,10 +7,15 @@ title: "configure"
 
 # `openclaw configure`
 
-Interactive prompt to set up credentials, devices, and agent defaults.
+Interactive prompt to set up credentials, devices, memory backends, and agent defaults.
 
 Note: The **Model** section now includes a multi-select for the
 `agents.defaults.models` allowlist (what shows up in `/model` and the model picker).
+
+Note: The **Model** section configures global defaults such as
+`agents.defaults.model` and `agents.defaults.models`. For specialist agents, use
+`openclaw agents add <id> --model <provider/model>` or edit `agents.list[].model`
+directly.
 
 Tip: `openclaw config` without a subcommand opens the same wizard. Use
 `openclaw config get|set|unset` for non-interactive edits.
@@ -32,5 +37,14 @@ Notes:
 
 ```bash
 openclaw configure
-openclaw configure --section model --section channels
+openclaw configure --section model --section memory --section channels
+```
+
+For a three-specialist setup, a common flow is:
+
+```bash
+openclaw configure --section model --section memory
+openclaw agents add orchestrator --model openai/gpt-5.4
+openclaw agents add research --model anthropic/claude-opus-4-6
+openclaw agents add coding --model moonshot/kimi-k2.5
 ```

@@ -1,0 +1,120 @@
+{
+  "id": "memory-langchain",
+  "kind": "memory",
+  "uiHints": {
+    "chromaUrl": {
+      "label": "Chroma URL",
+      "placeholder": "http://127.0.0.1:8000",
+      "help": "HTTP endpoint for the Chroma server"
+    },
+    "collectionPrefix": {
+      "label": "Collection Prefix",
+      "placeholder": "openclaw"
+    },
+    "embeddingProvider": {
+      "label": "Embedding Provider",
+      "placeholder": "openai",
+      "help": "LangChain embedding provider id (v1 supports openai)"
+    },
+    "embeddingModel": {
+      "label": "Embedding Model",
+      "placeholder": "text-embedding-3-small"
+    },
+    "apiKeySecretRef": {
+      "label": "Embedding API Key / SecretRef",
+      "sensitive": true,
+      "placeholder": "${OPENAI_API_KEY}",
+      "help": "Plaintext, ${ENV_VAR}, or SecretRef object for embeddings"
+    },
+    "chunkSize": {
+      "label": "Chunk Size",
+      "placeholder": "900",
+      "advanced": true
+    },
+    "chunkOverlap": {
+      "label": "Chunk Overlap",
+      "placeholder": "150",
+      "advanced": true
+    },
+    "batchSize": {
+      "label": "Batch Size",
+      "placeholder": "32",
+      "advanced": true
+    },
+    "syncIntervalSec": {
+      "label": "Sync Interval (sec)",
+      "placeholder": "300",
+      "advanced": true
+    },
+    "queueDir": {
+      "label": "Queue Directory",
+      "placeholder": "~/.openclaw/memory/langchain/queue",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "chromaUrl": {
+        "type": "string"
+      },
+      "collectionPrefix": {
+        "type": "string"
+      },
+      "embeddingProvider": {
+        "type": "string"
+      },
+      "embeddingModel": {
+        "type": "string"
+      },
+      "apiKeySecretRef": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": ["env", "file", "exec"]
+              },
+              "provider": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["source", "provider", "id"]
+          }
+        ]
+      },
+      "chunkSize": {
+        "type": "number",
+        "minimum": 100,
+        "maximum": 8000
+      },
+      "chunkOverlap": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2000
+      },
+      "batchSize": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 256
+      },
+      "syncIntervalSec": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 86400
+      },
+      "queueDir": {
+        "type": "string"
+      }
+    }
+  }
+}

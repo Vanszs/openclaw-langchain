@@ -1,14 +1,28 @@
 import fsSync from "node:fs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
+import { resolveConfiguredSecretInputWithFallback } from "../gateway/resolve-configured-secret-input-string.js";
 import { resolveMemoryBackendConfig } from "../memory/backend-config.js";
 import { DEFAULT_LOCAL_MODEL } from "../memory/embeddings.js";
 import { hasConfiguredMemorySecretInput } from "../memory/secret-input.js";
 import { note } from "../terminal/note.js";
 import { resolveUserPath } from "../utils.js";
+import { resolveMemoryPluginStatus } from "./status.scan.shared.js";
+
+type LangchainStatusFile = {
+  backendReachable?: boolean;
+  backendError?: string;
+  queueDepth?: number;
+  lastSyncAt?: number;
+  collectionName?: string;
+};
 
 /**
  * Check whether memory search has a usable embedding provider.
@@ -24,6 +38,12 @@ export async function noteMemorySearchHealth(
     };
   },
 ): Promise<void> {
+  const memoryPlugin = resolveMemoryPluginStatus(cfg);
+  if (memoryPlugin.enabled && memoryPlugin.slot === "memory-langchain") {
+    await noteLangchainMemoryHealth(cfg);
+    return;
+  }
+
   const agentId = resolveDefaultAgentId(cfg);
   const agentDir = resolveAgentDir(cfg, agentId);
   const resolved = resolveMemorySearchConfig(cfg, agentId);
@@ -153,6 +173,145 @@ export async function noteMemorySearchHealth(
     ].join("\n"),
     "Memory search",
   );
+}
+
+async function noteLangchainMemoryHealth(cfg: OpenClawConfig): Promise<void> {
+  const raw = cfg.plugins?.entries?.["memory-langchain"]?.config ?? {};
+  const embeddingProvider =
+    typeof raw.embeddingProvider === "string" && raw.embeddingProvider.trim()
+      ? raw.embeddingProvider.trim().toLowerCase()
+      : "openai";
+  if (embeddingProvider !== "openai") {
+    note(
+      [
+        `memory-langchain only supports embeddingProvider="openai" right now (found "${embeddingProvider}").`,
+        `Fix: ${formatCliCommand("openclaw configure --section memory")}`,
+      ].join("\n"),
+      "Memory search",
+    );
+    return;
+  }
+
+  const apiKeyResolution = await resolveConfiguredSecretInputWithFallback({
+    config: cfg,
+    env: process.env,
+    value: raw.apiKeySecretRef,
+    path: "plugins.entries.memory-langchain.config.apiKeySecretRef",
+    unresolvedReasonStyle: "detailed",
+    readFallback: () => process.env.OPENAI_API_KEY?.trim() || undefined,
+  });
+  if (!apiKeyResolution.secretRefConfigured && !apiKeyResolution.value) {
+    note(
+      [
+        "memory-langchain is active but no OpenAI embedding API key was found.",
+        apiKeyResolution.unresolvedRefReason ?? null,
+        "",
+        "Fix (pick one):",
+        "- Set OPENAI_API_KEY in the Gateway environment",
+        `- Configure plugins.entries.memory-langchain.config.apiKeySecretRef`,
+        `- Run ${formatCliCommand("openclaw configure --section memory")}`,
+        "",
+        `Verify: ${formatCliCommand("openclaw memory status --deep")}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "Memory search",
+    );
+  }
+
+  const status = await readLangchainStatusFile(cfg);
+  if (!status) {
+    note(
+      [
+        "memory-langchain has no status snapshot yet.",
+        "The LangChain/Chroma index may not have synced yet.",
+        "",
+        "Fix (pick one):",
+        `- Run ${formatCliCommand("openclaw memory sync")}`,
+        `- Start the Gateway so the background sync service can run`,
+      ].join("\n"),
+      "Memory search",
+    );
+    return;
+  }
+
+  if (status.backendReachable === false) {
+    note(
+      [
+        "memory-langchain cannot reach the configured Chroma backend.",
+        status.backendError ? `Backend error: ${status.backendError}` : null,
+        "",
+        `Verify: ${formatCliCommand("openclaw memory status --deep")}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "Memory search",
+    );
+  }
+
+  if (typeof status.queueDepth === "number" && status.queueDepth > 0) {
+    note(
+      [
+        `memory-langchain has ${status.queueDepth} queued ingest item(s).`,
+        "This usually means indexing is still catching up or the backend is failing.",
+        `Verify: ${formatCliCommand("openclaw memory status")}`,
+      ].join("\n"),
+      "Memory search",
+    );
+  }
+
+  const syncIntervalSec =
+    typeof raw.syncIntervalSec === "number" && Number.isFinite(raw.syncIntervalSec)
+      ? Math.max(0, Math.trunc(raw.syncIntervalSec))
+      : 300;
+  if (
+    typeof status.lastSyncAt === "number" &&
+    syncIntervalSec > 0 &&
+    Date.now() - status.lastSyncAt > syncIntervalSec * 2000
+  ) {
+    note(
+      [
+        "memory-langchain index looks stale.",
+        `Last sync: ${new Date(status.lastSyncAt).toISOString()}`,
+        status.collectionName ? `Collection: ${status.collectionName}` : null,
+        "",
+        `Fix: ${formatCliCommand("openclaw memory reindex --force")}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "Memory search",
+    );
+  }
+}
+
+async function readLangchainStatusFile(cfg: OpenClawConfig): Promise<LangchainStatusFile | null> {
+  const raw = cfg.plugins?.entries?.["memory-langchain"]?.config ?? {};
+  const defaultQueueDir = path.join(
+    resolveStateDir(process.env, os.homedir),
+    "memory",
+    "langchain",
+    "queue",
+  );
+  const queueDir = resolveConfiguredPath(
+    typeof raw.queueDir === "string" && raw.queueDir.trim() ? raw.queueDir : defaultQueueDir,
+    path.dirname(defaultQueueDir),
+  );
+  const statusPath = path.join(path.dirname(queueDir), "status.json");
+  try {
+    return JSON.parse(await fs.readFile(statusPath, "utf-8")) as LangchainStatusFile;
+  } catch {
+    return null;
+  }
+}
+
+function resolveConfiguredPath(input: string, baseDir: string): string {
+  if (input.startsWith("~/") || input === "~") {
+    return resolveUserPath(input);
+  }
+  if (path.isAbsolute(input)) {
+    return path.resolve(input);
+  }
+  return path.resolve(baseDir, input);
 }
 
 /**

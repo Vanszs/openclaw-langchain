@@ -129,6 +129,14 @@ async function resolveMemoryStatusSnapshot(params: {
   });
 }
 
+async function ensureMemoryPluginLoadedIfNeeded(memoryPlugin: MemoryPluginStatus): Promise<void> {
+  if (!memoryPlugin.enabled || !memoryPlugin.slot || memoryPlugin.slot === "memory-core") {
+    return;
+  }
+  const { ensurePluginRegistryLoaded } = await loadPluginRegistryModule();
+  ensurePluginRegistryLoaded({ scope: "all" });
+}
+
 async function scanStatusJsonFast(opts: {
   timeoutMs?: number;
   all?: boolean;
@@ -195,6 +203,7 @@ async function scanStatusJsonFast(opts: {
     ? pickGatewaySelfPresence(gatewayProbe.presence)
     : null;
   const memoryPlugin = resolveMemoryPluginStatus(cfg);
+  await ensureMemoryPluginLoadedIfNeeded(memoryPlugin);
   const memoryPromise = resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
   const memory = await memoryPromise;
   const pluginCompatibility = buildPluginCompatibilityNotices({ config: cfg });
@@ -329,6 +338,7 @@ export async function scanStatus(
 
       progress.setLabel("Checking memory…");
       const memoryPlugin = resolveMemoryPluginStatus(cfg);
+      await ensureMemoryPluginLoadedIfNeeded(memoryPlugin);
       const memory = await resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
       progress.tick();
 

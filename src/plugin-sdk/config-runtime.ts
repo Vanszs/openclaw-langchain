@@ -13,11 +13,13 @@ export * from "../config/talk.js";
 export * from "../config/agent-limits.js";
 export * from "../cron/store.js";
 export * from "../sessions/model-overrides.js";
+export { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 export type * from "../config/types.slack.js";
 export {
   loadSessionStore,
   readSessionUpdatedAt,
   recordSessionMetaFromInbound,
+  resolveSessionTranscriptsDirForAgent,
   resolveSessionKey,
   resolveStorePath,
   updateLastRoute,
@@ -25,6 +27,7 @@ export {
   type SessionResetMode,
   type SessionScope,
 } from "../config/sessions.js";
+export { readSessionMessages } from "../gateway/session-utils.fs.js";
 export { resolveGroupSessionKey } from "../config/sessions/group.js";
 export {
   evaluateSessionFreshness,
@@ -40,3 +43,8 @@ export {
   normalizeResolvedSecretInputString,
   normalizeSecretInputString,
 } from "../config/types.secrets.js";
+export {
+  resolveConfiguredSecretInputString,
+  resolveConfiguredSecretInputWithFallback,
+  resolveRequiredConfiguredSecretRefInputString,
+} from "../gateway/resolve-configured-secret-input-string.js";

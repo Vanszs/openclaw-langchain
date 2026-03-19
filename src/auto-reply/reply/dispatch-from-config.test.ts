@@ -1922,6 +1922,9 @@ describe("dispatchReplyFromConfig", () => {
         content: "/search hello",
         timestamp: 1710000000000,
         metadata: expect.objectContaining({
+          body: "body text",
+          bodyForAgent: "/search hello",
+          transcript: undefined,
           originatingChannel: "Telegram",
           originatingTo: "telegram:999",
           messageId: "sid-full",
@@ -1929,14 +1932,52 @@ describe("dispatchReplyFromConfig", () => {
           senderName: "Alice",
           senderUsername: "alice",
           senderE164: "+15555550123",
+          provider: "slack",
+          surface: "slack",
+          to: "whatsapp:+2000",
+          threadId: undefined,
+          mediaPath: undefined,
+          mediaType: undefined,
           guildId: "guild-123",
           channelName: "alerts",
+          isGroup: true,
+          groupId: "telegram:999",
         }),
       }),
       expect.objectContaining({
         channelId: "telegram",
         accountId: "acc-1",
         conversationId: "telegram:999",
+      }),
+    );
+  });
+
+  it("includes routed agent metadata on message_received when sessionKey is available", async () => {
+    setNoAbort();
+    hookMocks.runner.hasHooks.mockReturnValue(true);
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      SessionKey: "agent:research:main",
+      Provider: "telegram",
+      Surface: "telegram",
+      OriginatingChannel: "Telegram",
+      OriginatingTo: "telegram:999",
+      CommandBody: "/search hello",
+      AccountId: "acc-1",
+    });
+
+    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(hookMocks.runner.runMessageReceived).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        channelId: "telegram",
+        accountId: "acc-1",
+        conversationId: "telegram:999",
+        agentId: "research",
+        sessionKey: "agent:research:main",
       }),
     );
   });
