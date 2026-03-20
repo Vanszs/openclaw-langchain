@@ -114,6 +114,14 @@ export function resolveCanonicalConfigPath(
   return path.join(stateDir, CONFIG_FILENAME);
 }
 
+function candidateExistsAsFile(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve the active config path by preferring existing config candidates
  * before falling back to the canonical path.
@@ -126,13 +134,7 @@ export function resolveConfigPathCandidate(
     return resolveCanonicalConfigPath(env, resolveStateDir(env, homedir));
   }
   const candidates = resolveDefaultConfigCandidates(env, homedir);
-  const existing = candidates.find((candidate) => {
-    try {
-      return fs.existsSync(candidate);
-    } catch {
-      return false;
-    }
-  });
+  const existing = candidates.find((candidate) => candidateExistsAsFile(candidate));
   if (existing) {
     return existing;
   }
@@ -159,13 +161,7 @@ export function resolveConfigPath(
     path.join(stateDir, CONFIG_FILENAME),
     ...LEGACY_CONFIG_FILENAMES.map((name) => path.join(stateDir, name)),
   ];
-  const existing = candidates.find((candidate) => {
-    try {
-      return fs.existsSync(candidate);
-    } catch {
-      return false;
-    }
-  });
+  const existing = candidates.find((candidate) => candidateExistsAsFile(candidate));
   if (existing) {
     return existing;
   }

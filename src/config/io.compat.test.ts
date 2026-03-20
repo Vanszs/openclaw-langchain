@@ -43,6 +43,26 @@ describe("config io paths", () => {
     });
   });
 
+  it("treats a blank config file as an empty config", async () => {
+    await withTempHome(async (home) => {
+      const configDir = path.join(home, ".openclaw");
+      await fs.mkdir(configDir, { recursive: true });
+      const configPath = path.join(configDir, "openclaw.json");
+      await fs.writeFile(configPath, "", "utf-8");
+
+      const io = createIoForHome(home);
+      expect(io.configPath).toBe(configPath);
+      expect(io.loadConfig()).toEqual({});
+      await expect(io.readConfigFileSnapshot()).resolves.toMatchObject({
+        path: configPath,
+        exists: true,
+        valid: true,
+        config: {},
+        issues: [],
+      });
+    });
+  });
+
   it("defaults to ~/.openclaw/openclaw.json when config is missing", async () => {
     await withTempHome(async (home) => {
       const io = createIoForHome(home);

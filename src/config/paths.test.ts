@@ -127,6 +127,26 @@ describe("state + config path candidates", () => {
     });
   });
 
+  it("ignores directory-shaped config candidates and prefers a real legacy config file", async () => {
+    await withTempDir({ prefix: "openclaw-config-dir-" }, async (root) => {
+      const configDir = path.join(root, ".openclaw");
+      const canonicalPath = path.join(configDir, "openclaw.json");
+      const legacyPath = path.join(configDir, "clawdbot.json");
+      await fs.mkdir(canonicalPath, { recursive: true });
+      await fs.writeFile(legacyPath, "{}", "utf-8");
+
+      const resolved = resolveConfigPathCandidate({} as NodeJS.ProcessEnv, () => root);
+      expect(resolved).toBe(legacyPath);
+
+      const ioPath = resolveConfigPath(
+        {} as NodeJS.ProcessEnv,
+        path.join(root, ".openclaw"),
+        () => root,
+      );
+      expect(ioPath).toBe(legacyPath);
+    });
+  });
+
   it("respects state dir overrides when config is missing", async () => {
     await withTempDir({ prefix: "openclaw-config-override-" }, async (root) => {
       const legacyDir = path.join(root, ".openclaw");

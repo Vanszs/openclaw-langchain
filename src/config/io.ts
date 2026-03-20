@@ -164,6 +164,10 @@ function hashConfigRaw(raw: string | null): string {
     .digest("hex");
 }
 
+function isBlankConfigRaw(raw: string): boolean {
+  return raw.trim().length === 0;
+}
+
 async function tightenStateDirPermissionsIfNeeded(params: {
   configPath: string;
   env: NodeJS.ProcessEnv;
@@ -747,6 +751,9 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         return {};
       }
       const raw = deps.fs.readFileSync(configPath, "utf-8");
+      if (isBlankConfigRaw(raw)) {
+        return {};
+      }
       const parsed = deps.json5.parse(raw);
       const readResolution = resolveConfigForRead(
         resolveConfigIncludesForRead(parsed, configPath, deps),
@@ -919,6 +926,24 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
     try {
       const raw = deps.fs.readFileSync(configPath, "utf-8");
       const hash = hashConfigRaw(raw);
+      if (isBlankConfigRaw(raw)) {
+        const config = {};
+        return {
+          snapshot: {
+            path: configPath,
+            exists: true,
+            raw,
+            parsed: {},
+            resolved: {},
+            valid: true,
+            config,
+            hash,
+            issues: [],
+            warnings: [],
+            legacyIssues: [],
+          },
+        };
+      }
       const parsedRes = parseConfigJson5(raw, deps.json5);
       if (!parsedRes.ok) {
         return {

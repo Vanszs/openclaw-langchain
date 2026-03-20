@@ -22,6 +22,16 @@ function hasAnyMemoryFlag(opts: OnboardOptions): boolean {
   );
 }
 
+function hasLangchainMemoryFlag(opts: OnboardOptions): boolean {
+  return Boolean(
+    opts.memoryChromaUrl ||
+    opts.memoryCollectionPrefix ||
+    opts.memoryEmbeddingProvider ||
+    opts.memoryEmbeddingModel ||
+    opts.memoryApiKeySecretRef,
+  );
+}
+
 export function applyNonInteractiveMemoryConfig(params: {
   nextConfig: OpenClawConfig;
   opts: OnboardOptions;
@@ -33,7 +43,8 @@ export function applyNonInteractiveMemoryConfig(params: {
     return nextConfig;
   }
 
-  const backend = opts.memoryBackend ?? "memory-langchain";
+  const backend =
+    opts.memoryBackend ?? (hasLangchainMemoryFlag(opts) ? "memory-langchain" : "memory-core");
   if (backend !== "memory-core" && backend !== "memory-langchain" && backend !== "none") {
     runtime.error('Invalid --memory-backend. Use "memory-core", "memory-langchain", or "none".');
     runtime.exit(1);
