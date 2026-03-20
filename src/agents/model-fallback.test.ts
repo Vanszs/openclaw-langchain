@@ -247,7 +247,7 @@ describe("runWithModelFallback", () => {
     expect(onError.mock.calls[0]?.[0]?.error).toBe(unknownError);
   });
 
-  it("throws unrecognized error on last candidate", async () => {
+  it("returns a structured summary for unknown errors on the last candidate", async () => {
     const cfg = makeCfg();
     const run = vi.fn().mockRejectedValueOnce(new Error("something weird"));
 
@@ -259,8 +259,60 @@ describe("runWithModelFallback", () => {
         run,
         fallbacksOverride: [],
       }),
-    ).rejects.toThrow("something weird");
+    ).rejects.toThrow("All models failed (1): openai/gpt-4.1-mini: something weird (unknown)");
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps falling back when the onError hook throws", async () => {
+    const cfg = makeCfg();
+    const run = vi.fn().mockRejectedValueOnce(new Error("bad request")).mockResolvedValueOnce("ok");
+    const onError = vi.fn().mockRejectedValueOnce(new Error("hook exploded"));
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      run,
+      onError,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries session_expired on the same candidate before falling back", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-4.1-mini",
+            fallbacks: [],
+          },
+        },
+      },
+    });
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("session expired"), { status: 410 }))
+      .mockRejectedValueOnce(Object.assign(new Error("session expired"), { status: 410 }))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      run,
+      fallbacksOverride: [],
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls).toEqual([
+      ["openai", "gpt-4.1-mini"],
+      ["openai", "gpt-4.1-mini"],
+      ["openai", "gpt-4.1-mini"],
+    ]);
   });
 
   it("falls back on auth errors", async () => {
@@ -1402,6 +1454,37 @@ describe("runWithModelFallback", () => {
 });
 
 describe("runWithImageModelFallback", () => {
+  it("defaults OCR fallback candidates to the OpenRouter Qwen image path", async () => {
+    const run = vi.fn().mockResolvedValueOnce("ok");
+
+    const result = await runWithImageModelFallback({
+      cfg: undefined,
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("openrouter", "qwen/qwen-2.5-vl-7b-instruct");
+  });
+
+  it("uses the built-in OCR image fallback chain when config omits image defaults", async () => {
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("ocr primary unavailable"))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithImageModelFallback({
+      cfg: undefined,
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run.mock.calls).toEqual([
+      ["openrouter", "qwen/qwen-2.5-vl-7b-instruct"],
+      ["openrouter", "anthropic/claude-sonnet-4-6"],
+    ]);
+  });
+
   it("keeps explicit image fallbacks reachable when models allowlist is present", async () => {
     const cfg = makeCfg({
       agents: {
@@ -1430,6 +1513,28 @@ describe("runWithImageModelFallback", () => {
     expect(run.mock.calls).toEqual([
       ["openai", "gpt-image-1"],
       ["google", "gemini-2.5-flash-image-preview"],
+    ]);
+  });
+});
+
+describe("runWithModelFallback built-in defaults", () => {
+  it("uses the GPT-OSS default fallback chain when config omits model defaults", async () => {
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("primary unavailable"))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithModelFallback({
+      cfg: undefined,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run.mock.calls).toEqual([
+      ["openrouter", "openai/gpt-oss-120b"],
+      ["openrouter", "anthropic/claude-sonnet-4-6"],
     ]);
   });
 });

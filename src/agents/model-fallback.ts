@@ -3,6 +3,7 @@ import {
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
 } from "../config/model-input.js";
+import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { sanitizeForLog } from "../terminal/ansi.js";
 import {
@@ -12,7 +13,13 @@ import {
   resolveProfilesUnavailableReason,
   resolveAuthProfileOrder,
 } from "./auth-profiles.js";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import {
+  DEFAULT_IMAGE_MODEL_FALLBACKS,
+  DEFAULT_IMAGE_MODEL_PRIMARY,
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_FALLBACKS,
+  DEFAULT_PROVIDER,
+} from "./defaults.js";
 import {
   coerceToFailoverError,
   describeFailoverError,
@@ -33,6 +40,20 @@ import type { FailoverReason } from "./pi-embedded-helpers.js";
 import { isLikelyContextOverflowError } from "./pi-embedded-helpers.js";
 
 const log = createSubsystemLogger("model-fallback");
+const TRANSIENT_RETRY_POLICY = {
+  initialMs: 250,
+  maxMs: 2_000,
+  factor: 2,
+  jitter: 0.2,
+} as const;
+const MAX_SAME_CANDIDATE_SESSION_RETRIES = 3;
+const SAME_CANDIDATE_RETRY_REASONS = new Set<FailoverReason>(["session_expired"]);
+const TRANSIENT_FALLBACK_BACKOFF_REASONS = new Set<FailoverReason>([
+  "timeout",
+  "rate_limit",
+  "overloaded",
+  "session_expired",
+]);
 
 export type ModelFallbackRunOptions = {
   allowTransientCooldownProbe?: boolean;
@@ -131,26 +152,42 @@ async function runFallbackCandidate<T>(params: {
   model: string;
   options?: ModelFallbackRunOptions;
 }): Promise<{ ok: true; result: T } | { ok: false; error: unknown }> {
-  try {
-    const result = params.options
-      ? await params.run(params.provider, params.model, params.options)
-      : await params.run(params.provider, params.model);
-    return {
-      ok: true,
-      result,
-    };
-  } catch (err) {
-    // Normalize abort-wrapped rate-limit errors (e.g. Google Vertex RESOURCE_EXHAUSTED)
-    // so they become FailoverErrors and continue the fallback loop instead of aborting.
-    const normalizedFailover = coerceToFailoverError(err, {
-      provider: params.provider,
-      model: params.model,
-    });
-    if (shouldRethrowAbort(err) && !normalizedFailover) {
-      throw err;
+  for (let attempt = 1; attempt <= MAX_SAME_CANDIDATE_SESSION_RETRIES; attempt += 1) {
+    try {
+      const result = params.options
+        ? await params.run(params.provider, params.model, params.options)
+        : await params.run(params.provider, params.model);
+      return {
+        ok: true,
+        result,
+      };
+    } catch (err) {
+      // Normalize abort-wrapped rate-limit errors (e.g. Google Vertex RESOURCE_EXHAUSTED)
+      // so they become FailoverErrors and continue the fallback loop instead of aborting.
+      const normalizedFailover = coerceToFailoverError(err, {
+        provider: params.provider,
+        model: params.model,
+      });
+      if (shouldRethrowAbort(err) && !normalizedFailover) {
+        throw err;
+      }
+      const resolvedError = normalizedFailover ?? err;
+      const reason = describeFailoverError(resolvedError).reason;
+      const shouldRetry =
+        reason &&
+        SAME_CANDIDATE_RETRY_REASONS.has(reason) &&
+        attempt < MAX_SAME_CANDIDATE_SESSION_RETRIES;
+      if (!shouldRetry) {
+        return { ok: false, error: resolvedError };
+      }
+      const backoffMs = computeBackoff(TRANSIENT_RETRY_POLICY, attempt);
+      log.warn(
+        `Retrying ${sanitizeForLog(params.provider)}/${sanitizeForLog(params.model)} after transient ${reason} in ${backoffMs}ms (attempt ${attempt + 1}/${MAX_SAME_CANDIDATE_SESSION_RETRIES}).`,
+      );
+      await sleepWithAbort(backoffMs);
     }
-    return { ok: false, error: normalizedFailover ?? err };
   }
+  return { ok: false, error: new Error("Session retry budget exhausted") };
 }
 
 async function runFallbackAttempt<T>(params: {
@@ -190,7 +227,14 @@ function throwFallbackFailureSummary(params: {
   label: string;
   formatAttempt: (attempt: FallbackAttempt) => string;
 }): never {
-  if (params.attempts.length <= 1 && params.lastError) {
+  if (params.attempts.length === 0 && params.lastError) {
+    throw params.lastError;
+  }
+  if (
+    params.attempts.length === 1 &&
+    params.attempts[0]?.reason !== "unknown" &&
+    params.lastError
+  ) {
     throw params.lastError;
   }
   const summary =
@@ -239,12 +283,15 @@ function resolveImageFallbackCandidates(params: {
     addRaw(params.modelOverride);
   } else {
     const primary = resolveAgentModelPrimaryValue(params.cfg?.agents?.defaults?.imageModel);
-    if (primary?.trim()) {
-      addRaw(primary);
-    }
+    addRaw(primary?.trim() ? primary : DEFAULT_IMAGE_MODEL_PRIMARY);
   }
 
-  const imageFallbacks = resolveAgentModelFallbackValues(params.cfg?.agents?.defaults?.imageModel);
+  const rawImageModelConfig = params.cfg?.agents?.defaults?.imageModel;
+  const configuredImageFallbacks = resolveAgentModelFallbackValues(rawImageModelConfig);
+  const imageFallbacks =
+    configuredImageFallbacks.length > 0 || hasExplicitFallbacksConfig(rawImageModelConfig)
+      ? configuredImageFallbacks
+      : [...DEFAULT_IMAGE_MODEL_FALLBACKS];
 
   for (const raw of imageFallbacks) {
     // Explicitly configured image fallbacks should remain reachable even when a
@@ -291,13 +338,16 @@ function resolveFallbackCandidates(params: {
     if (params.fallbacksOverride !== undefined) {
       return params.fallbacksOverride;
     }
-    const configuredFallbacks = resolveAgentModelFallbackValues(
-      params.cfg?.agents?.defaults?.model,
-    );
+    const rawModelConfig = params.cfg?.agents?.defaults?.model;
+    const configuredFallbacks = resolveAgentModelFallbackValues(rawModelConfig);
+    const effectiveFallbacks =
+      configuredFallbacks.length > 0 || hasExplicitFallbacksConfig(rawModelConfig)
+        ? configuredFallbacks
+        : [...DEFAULT_MODEL_FALLBACKS];
     // When user runs a different provider than config, only use configured fallbacks
     // if the current model is already in that chain (e.g. session on first fallback).
     if (normalizedPrimary.provider !== configuredPrimary.provider) {
-      const isConfiguredFallback = configuredFallbacks.some((raw) => {
+      const isConfiguredFallback = effectiveFallbacks.some((raw) => {
         const resolved = resolveModelRefFromString({
           raw: String(raw ?? ""),
           defaultProvider,
@@ -305,10 +355,10 @@ function resolveFallbackCandidates(params: {
         });
         return resolved ? sameModelCandidate(resolved.ref, normalizedPrimary) : false;
       });
-      return isConfiguredFallback ? configuredFallbacks : [];
+      return isConfiguredFallback ? effectiveFallbacks : [];
     }
     // Same provider: always use full fallback chain (model version differences within provider).
-    return configuredFallbacks;
+    return effectiveFallbacks;
   })();
 
   for (const raw of modelFallbacks) {
@@ -330,6 +380,12 @@ function resolveFallbackCandidates(params: {
   }
 
   return candidates;
+}
+
+function hasExplicitFallbacksConfig(value: unknown): boolean {
+  return (
+    value !== null && typeof value === "object" && !Array.isArray(value) && "fallbacks" in value
+  );
 }
 
 const lastProbeAttempt = new Map<string, number>();
@@ -508,6 +564,38 @@ function resolveCooldownDecision(params: {
   };
 }
 
+async function invokeOnErrorSafely(
+  onError: ModelFallbackErrorHandler | undefined,
+  payload: Parameters<ModelFallbackErrorHandler>[0],
+): Promise<void> {
+  if (!onError) {
+    return;
+  }
+  try {
+    await onError(payload);
+  } catch (error) {
+    log.warn(
+      `model fallback onError hook failed for ${sanitizeForLog(payload.provider)}/${sanitizeForLog(payload.model)}: ${sanitizeForLog(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+}
+
+async function maybeBackoffBeforeNextCandidate(params: {
+  reason: FailoverReason | undefined;
+  attempt: number;
+  provider: string;
+  model: string;
+}): Promise<void> {
+  if (!params.reason || !TRANSIENT_FALLBACK_BACKOFF_REASONS.has(params.reason)) {
+    return;
+  }
+  const backoffMs = computeBackoff(TRANSIENT_RETRY_POLICY, params.attempt);
+  log.warn(
+    `Waiting ${backoffMs}ms before the next fallback after transient ${sanitizeForLog(params.reason)} from ${sanitizeForLog(params.provider)}/${sanitizeForLog(params.model)}.`,
+  );
+  await sleepWithAbort(backoffMs);
+}
+
 export async function runWithModelFallback<T>(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
@@ -531,6 +619,7 @@ export async function runWithModelFallback<T>(params: {
   const attempts: FallbackAttempt[] = [];
   let lastError: unknown;
   const cooldownProbeUsedProviders = new Set<string>();
+  let transientFallbackBackoffAttempt = 0;
 
   const hasFallbackCandidates = candidates.length > 1;
 
@@ -721,10 +810,6 @@ export async function runWithModelFallback<T>(params: {
       // there are remaining candidates.  Only abort/context-overflow errors
       // (handled above) are truly non-retryable.
       const isKnownFailover = isFailoverError(normalized);
-      if (!isKnownFailover && i === candidates.length - 1) {
-        throw err;
-      }
-
       lastError = isKnownFailover ? normalized : err;
       const described = describeFailoverError(normalized);
       attempts.push({
@@ -752,13 +837,26 @@ export async function runWithModelFallback<T>(params: {
         requestedModelMatched: requestedModel,
         fallbackConfigured: hasFallbackCandidates,
       });
-      await params.onError?.({
+      await invokeOnErrorSafely(params.onError, {
         provider: candidate.provider,
         model: candidate.model,
         error: isKnownFailover ? normalized : err,
         attempt: i + 1,
         total: candidates.length,
       });
+      if (described.reason && TRANSIENT_FALLBACK_BACKOFF_REASONS.has(described.reason)) {
+        transientFallbackBackoffAttempt += 1;
+      } else {
+        transientFallbackBackoffAttempt = 0;
+      }
+      if (i < candidates.length - 1) {
+        await maybeBackoffBeforeNextCandidate({
+          reason: described.reason,
+          attempt: transientFallbackBackoffAttempt,
+          provider: candidate.provider,
+          model: candidate.model,
+        });
+      }
     }
   }
 
@@ -793,6 +891,7 @@ export async function runWithImageModelFallback<T>(params: {
 
   const attempts: FallbackAttempt[] = [];
   let lastError: unknown;
+  let transientFallbackBackoffAttempt = 0;
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
@@ -803,18 +902,39 @@ export async function runWithImageModelFallback<T>(params: {
     {
       const err = attemptRun.error;
       lastError = err;
+      const normalized = coerceToFailoverError(err, {
+        provider: candidate.provider,
+        model: candidate.model,
+      });
+      const described = describeFailoverError(normalized ?? err);
       attempts.push({
         provider: candidate.provider,
         model: candidate.model,
-        error: err instanceof Error ? err.message : String(err),
+        error: described.message,
+        reason: described.reason ?? "unknown",
+        status: described.status,
+        code: described.code,
       });
-      await params.onError?.({
+      await invokeOnErrorSafely(params.onError, {
         provider: candidate.provider,
         model: candidate.model,
         error: err,
         attempt: i + 1,
         total: candidates.length,
       });
+      if (described.reason && TRANSIENT_FALLBACK_BACKOFF_REASONS.has(described.reason)) {
+        transientFallbackBackoffAttempt += 1;
+      } else {
+        transientFallbackBackoffAttempt = 0;
+      }
+      if (i < candidates.length - 1) {
+        await maybeBackoffBeforeNextCandidate({
+          reason: described.reason,
+          attempt: transientFallbackBackoffAttempt,
+          provider: candidate.provider,
+          model: candidate.model,
+        });
+      }
     }
   }
 

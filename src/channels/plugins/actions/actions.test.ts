@@ -25,7 +25,7 @@ vi.mock("../../../../extensions/slack/src/action-runtime.js", () => ({
   handleSlackAction,
 }));
 
-let discordMessageActions: typeof import("../../../../extensions/discord/runtime-api.js").discordMessageActions;
+let discordMessageActions: typeof import("../../../../extensions/discord/src/channel-actions.js").discordMessageActions;
 let handleDiscordMessageAction: typeof import("./discord/handle-action.js").handleDiscordMessageAction;
 let telegramMessageActions: typeof import("../../../../extensions/telegram/runtime-api.js").telegramMessageActions;
 let signalMessageActions: typeof import("../../../../extensions/signal/src/message-actions.js").signalMessageActions;
@@ -200,7 +200,8 @@ async function expectSlackSendRejected(params: Record<string, unknown>, error: R
 }
 
 beforeAll(async () => {
-  ({ discordMessageActions } = await import("../../../../extensions/discord/runtime-api.js"));
+  ({ discordMessageActions } =
+    await import("../../../../extensions/discord/src/channel-actions.js"));
   ({ handleDiscordMessageAction } = await import("./discord/handle-action.js"));
   ({ telegramMessageActions } = await import("../../../../extensions/telegram/runtime-api.js"));
   ({ signalMessageActions } = await import("../../../../extensions/signal/src/message-actions.js"));

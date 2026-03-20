@@ -2,9 +2,16 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
 const callGateway = vi.fn();
+const resolveRuntimeWebTools = vi.fn().mockResolvedValue({
+  diagnostics: [],
+});
 
 vi.mock("../gateway/call.js", () => ({
   callGateway,
+}));
+
+vi.mock("../secrets/runtime-web-tools.js", () => ({
+  resolveRuntimeWebTools,
 }));
 
 let resolveCommandSecretRefsViaGateway: typeof import("./command-secret-gateway.js").resolveCommandSecretRefsViaGateway;
@@ -15,6 +22,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   callGateway.mockReset();
+  resolveRuntimeWebTools.mockClear();
 });
 
 describe("resolveCommandSecretRefsViaGateway", () => {

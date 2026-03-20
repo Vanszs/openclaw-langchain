@@ -7,13 +7,25 @@ const resolveApiKeyForProviderMock = vi.fn();
 const describeImagesWithModelMock = vi.fn();
 const fromDocumentsMock = vi.fn();
 const splitTextMock = vi.fn();
+const { extractPdfContentMock, runWithImageModelFallbackMock } = vi.hoisted(() => ({
+  extractPdfContentMock: vi.fn(),
+  runWithImageModelFallbackMock: vi.fn(),
+}));
 
 vi.mock("../agents/model-auth.js", () => ({
   resolveApiKeyForProvider: resolveApiKeyForProviderMock,
 }));
 
+vi.mock("../agents/model-fallback.js", () => ({
+  runWithImageModelFallback: runWithImageModelFallbackMock,
+}));
+
 vi.mock("../media-understanding/providers/image.js", () => ({
   describeImagesWithModel: describeImagesWithModelMock,
+}));
+
+vi.mock("../media/pdf-extract.js", () => ({
+  extractPdfContent: extractPdfContentMock,
 }));
 
 vi.mock("@langchain/openai", () => ({
@@ -44,6 +56,43 @@ describe("buildAttachmentRetrievalContextNote", () => {
     vi.resetModules();
     vi.clearAllMocks();
     resolveApiKeyForProviderMock.mockResolvedValue({ apiKey: "or-test" });
+    runWithImageModelFallbackMock.mockImplementation(async ({ cfg, run, onError }) => {
+      const primary = cfg?.agents?.defaults?.imageModel?.primary;
+      const fallbacks = cfg?.agents?.defaults?.imageModel?.fallbacks ?? [];
+      const refs = [primary, ...fallbacks].filter(
+        (value): value is string => typeof value === "string" && value.includes("/"),
+      );
+      let lastError: unknown;
+      const attempts: Array<{ provider: string; model: string; error: string }> = [];
+      for (const [index, ref] of refs.entries()) {
+        const slash = ref.indexOf("/");
+        const provider = ref.slice(0, slash);
+        const model = ref.slice(slash + 1);
+        try {
+          const result = await run(provider, model);
+          return { result, provider, model, attempts };
+        } catch (error) {
+          lastError = error;
+          attempts.push({
+            provider,
+            model,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await onError?.({
+            provider,
+            model,
+            error,
+            attempt: index + 1,
+            total: refs.length,
+          });
+        }
+      }
+      throw lastError ?? new Error("No image model configured");
+    });
+    extractPdfContentMock.mockResolvedValue({
+      text: "native pdf text",
+      images: [],
+    });
     splitTextMock.mockImplementation(async (text: string) => [text]);
     fromDocumentsMock.mockImplementation(async (documents: Array<{ pageContent: string }>) => ({
       similaritySearchWithScore: async () => [
@@ -82,14 +131,10 @@ describe("buildAttachmentRetrievalContextNote", () => {
     const filePath = path.join(tempDir, "scan.pdf");
     await fs.writeFile(filePath, "%PDF-1.4 fake");
 
-    vi.doMock("../media/pdf-extract.js", () => ({
-      extractPdfContent: vi.fn(async () => ({
-        text: "",
-        images: [{ data: Buffer.from("img").toString("base64"), mimeType: "image/png" }],
-      })),
-    }));
-    vi.resetModules();
-    ({ buildAttachmentRetrievalContextNote } = await import("./attachment-rag.js"));
+    extractPdfContentMock.mockResolvedValue({
+      text: "",
+      images: [{ data: Buffer.from("img").toString("base64"), mimeType: "image/png" }],
+    });
 
     describeImagesWithModelMock.mockResolvedValue({ text: "invoice total 42", model: "qwen" });
 

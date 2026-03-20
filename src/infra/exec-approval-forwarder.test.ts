@@ -1,4 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { sendTypingTelegramMock } = vi.hoisted(() => ({
+  sendTypingTelegramMock: vi.fn().mockResolvedValue({ ok: true }),
+}));
+
+vi.mock(import("../../extensions/telegram/src/send.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    sendTypingTelegram: sendTypingTelegramMock,
+  };
+});
 import { discordPlugin } from "../../extensions/discord/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -256,6 +268,7 @@ describe("exec approval forwarder", () => {
       }),
     ).resolves.toBe(true);
 
+    await Promise.resolve();
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({

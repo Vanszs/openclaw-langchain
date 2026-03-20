@@ -4,6 +4,7 @@ import { getMediaUnderstandingProvider } from "../../media-understanding/provide
 import { buildProviderRegistry } from "../../media-understanding/runner.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import { resolveUserPath } from "../../utils.js";
+import { DEFAULT_IMAGE_MODEL_FALLBACKS, DEFAULT_IMAGE_MODEL_PRIMARY } from "../defaults.js";
 import { isMinimaxVlmProvider } from "../minimax-vlm.js";
 import {
   coerceImageAssistantText,
@@ -104,7 +105,13 @@ export function resolveImageModelConfigForTool(params: {
   return buildToolModelConfigFromCandidates({
     explicit,
     agentDir: params.agentDir,
-    candidates: [...primaryCandidates, "openai/gpt-5-mini", ANTHROPIC_IMAGE_FALLBACK],
+    candidates: [
+      DEFAULT_IMAGE_MODEL_PRIMARY,
+      ...DEFAULT_IMAGE_MODEL_FALLBACKS,
+      ...primaryCandidates,
+      "openai/gpt-5-mini",
+      ANTHROPIC_IMAGE_FALLBACK,
+    ],
   });
 }
 

@@ -3139,7 +3139,7 @@ description: test skill
             expect.arrayContaining([
               expect.objectContaining({
                 checkId: "plugins.extensions_no_allowlist",
-                severity: "warn",
+                severity: "critical",
               }),
             ]),
           );

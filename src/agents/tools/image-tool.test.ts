@@ -266,6 +266,17 @@ describe("image tool implicit imageModel config", () => {
     });
   });
 
+  it("defaults to the OpenRouter Qwen OCR path when config omits imageModel", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test");
+
+      expect(resolveImageModelConfigForTool({ cfg: undefined, agentDir })).toEqual({
+        primary: "openrouter/qwen/qwen-2.5-vl-7b-instruct",
+        fallbacks: ["openrouter/anthropic/claude-sonnet-4-6"],
+      });
+    });
+  });
+
   it("pairs minimax primary with MiniMax-VL-01 (and fallbacks) when auth exists", async () => {
     await withTempAgentDir(async (agentDir) => {
       vi.stubEnv("MINIMAX_API_KEY", "minimax-test");

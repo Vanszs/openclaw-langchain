@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/config.js";
+import { getDefaultModelExtraParams } from "./defaults.js";
 
 export function resolveModelExtraParams(params: {
   cfg: OpenClawConfig | undefined;
@@ -8,7 +9,11 @@ export function resolveModelExtraParams(params: {
 }): Record<string, unknown> | undefined {
   const modelKey = `${params.provider}/${params.modelId}`;
   const modelConfig = params.cfg?.agents?.defaults?.models?.[modelKey];
-  const globalParams = modelConfig?.params ? { ...modelConfig.params } : undefined;
+  const builtInParams = getDefaultModelExtraParams(modelKey);
+  const globalParams = mergeModelParams(
+    builtInParams,
+    modelConfig?.params ? { ...modelConfig.params } : undefined,
+  );
   const agentParams =
     params.agentId && params.cfg?.agents?.list
       ? params.cfg.agents.list.find((agent) => agent.id === params.agentId)?.params
@@ -18,9 +23,9 @@ export function resolveModelExtraParams(params: {
     return undefined;
   }
 
-  const merged = Object.assign({}, globalParams, agentParams);
+  const merged = mergeModelParams(globalParams, agentParams) ?? {};
   const resolvedParallelToolCalls = resolveAliasedParamValue(
-    [globalParams, agentParams],
+    [builtInParams, globalParams, agentParams],
     "parallel_tool_calls",
     "parallelToolCalls",
   );
@@ -29,6 +34,28 @@ export function resolveModelExtraParams(params: {
     delete merged.parallelToolCalls;
   }
 
+  return merged;
+}
+
+function mergeModelParams(
+  base: Record<string, unknown> | undefined,
+  override: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!base && !override) {
+    return undefined;
+  }
+  const merged: Record<string, unknown> = {
+    ...base,
+    ...override,
+  };
+  const baseProvider = isRecord(base?.provider) ? base.provider : undefined;
+  const overrideProvider = isRecord(override?.provider) ? override.provider : undefined;
+  if (baseProvider || overrideProvider) {
+    merged.provider = {
+      ...baseProvider,
+      ...overrideProvider,
+    };
+  }
   return merged;
 }
 
@@ -52,4 +79,8 @@ function resolveAliasedParamValue(
     seen = true;
   }
   return seen ? resolved : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

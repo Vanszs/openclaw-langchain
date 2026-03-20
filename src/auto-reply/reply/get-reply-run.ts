@@ -56,6 +56,56 @@ import { appendUntrustedContext } from "./untrusted-context.js";
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
 
+function normalizeSummaryToken(value: string, maxChars = 80): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function extractAttachmentContextSummaryMarker(note?: string): string | undefined {
+  if (!note?.trim()) {
+    return undefined;
+  }
+  const lines = note
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const markers = ["attachment-context"];
+  const retrievalMode = lines.find((line) => line.startsWith("Retrieval mode: "));
+  if (retrievalMode) {
+    markers.push(
+      `mode=${normalizeSummaryToken(retrievalMode.replace("Retrieval mode: ", ""), 32)}`,
+    );
+  }
+  const filesProcessed = lines.find((line) => line.startsWith("Files processed: "));
+  if (filesProcessed) {
+    markers.push(`files=${normalizeSummaryToken(filesProcessed.replace("Files processed: ", ""))}`);
+  }
+  const ocrStatus = lines.find((line) => line.startsWith("OCR status: "));
+  if (ocrStatus) {
+    markers.push(`ocr=${normalizeSummaryToken(ocrStatus.replace("OCR status: ", ""), 48)}`);
+  }
+  const retrievalStatus = lines.find((line) => line.startsWith("Retrieval status: "));
+  if (retrievalStatus) {
+    markers.push(
+      `retrieval=${normalizeSummaryToken(retrievalStatus.replace("Retrieval status: ", ""), 48)}`,
+    );
+  }
+  return `[${markers.join(" | ")}]`;
+}
+
+function buildFollowupSummaryLine(params: {
+  baseBody: string;
+  attachmentRetrievalNote?: string;
+  hasMedia: boolean;
+}): string {
+  const attachmentMarker = extractAttachmentContextSummaryMarker(params.attachmentRetrievalNote);
+  const baseText = params.baseBody.trim() || (params.hasMedia ? "[media-only]" : "");
+  return [attachmentMarker, baseText].filter(Boolean).join(" ").trim();
+}
+
 function buildResetSessionNoticeText(params: {
   provider: string;
   model: string;
@@ -451,9 +501,11 @@ export async function runPreparedReply(
     sessionEntry,
     resolveSessionFilePathOptions({ agentId, storePath }),
   );
-  // Use bodyWithEvents (events prepended, but no session hints / untrusted context) so
-  // deferred turns receive system events while keeping the same scope as effectiveBaseBody did.
-  const queueBodyBase = [threadContextNote, bodyWithEvents].filter(Boolean).join("\n\n");
+  // Deferred queue bodies should preserve the user's original first token
+  // (for steer mode) while still carrying thread context, system events, and
+  // sanitized attachment retrieval context.
+  const queuePromptBase = appendUntrustedContext(bodyWithEvents, untrustedContext);
+  const queueBodyBase = [threadContextNote, queuePromptBase].filter(Boolean).join("\n\n");
   const queuedBody = mediaNote
     ? [mediaNote, mediaReplyHint, queueBodyBase].filter(Boolean).join("\n").trim()
     : queueBodyBase;
@@ -493,7 +545,11 @@ export async function runPreparedReply(
   const followupRun = {
     prompt: queuedBody,
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
-    summaryLine: baseBodyTrimmedRaw,
+    summaryLine: buildFollowupSummaryLine({
+      baseBody: baseBodyTrimmedRaw,
+      attachmentRetrievalNote,
+      hasMedia: Boolean(mediaNote),
+    }),
     enqueuedAt: Date.now(),
     // Originating channel for reply routing.
     originatingChannel: ctx.OriginatingChannel,
