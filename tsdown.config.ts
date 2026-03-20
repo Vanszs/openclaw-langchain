@@ -21,6 +21,12 @@ type InputOptionsReturn = InputOptionsFactory extends (
   : never;
 type OnLogFunction = InputOptionsArg extends { onLog?: infer OnLog } ? NonNullable<OnLog> : never;
 
+const SUPPRESSED_EVAL_WARNING_SOURCES = [
+  "@protobufjs/inquire/index.js",
+  "node_modules/bottleneck/lib/RedisConnection.js",
+  "node_modules/bottleneck/lib/IORedisConnection.js",
+] as const;
+
 const env = {
   NODE_ENV: "production",
 };
@@ -45,7 +51,7 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
       return false;
     }
     const haystack = [log.message, log.id, log.importer].filter(Boolean).join("\n");
-    return haystack.includes("@protobufjs/inquire/index.js");
+    return SUPPRESSED_EVAL_WARNING_SOURCES.some((source) => haystack.includes(source));
   }
 
   return {

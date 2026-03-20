@@ -1,8 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import tsdownConfig from "../../tsdown.config.ts";
 
 type TsdownConfigEntry = {
   entry?: Record<string, string> | string[];
+  inputOptions?: (options: {
+    onLog?: (
+      level: string,
+      log: { code?: string; message?: string; id?: string; importer?: string },
+      defaultHandler: (level: string, log: { code?: string; message?: string }) => void,
+    ) => void;
+  }) =>
+    | {
+        onLog?: (
+          level: string,
+          log: { code?: string; message?: string; id?: string; importer?: string },
+          defaultHandler: (level: string, log: { code?: string; message?: string }) => void,
+        ) => void;
+      }
+    | undefined;
   outDir?: string;
 };
 
@@ -54,5 +69,42 @@ describe("tsdown config", () => {
           : false,
       ),
     ).toBe(false);
+  });
+
+  it("suppresses known third-party eval warnings while keeping other eval warnings", () => {
+    const configs = asConfigArray(tsdownConfig);
+    const configWithInputOptions = configs.find(
+      (config) => typeof config.inputOptions === "function",
+    );
+    expect(configWithInputOptions).toBeDefined();
+
+    const defaultHandler = vi.fn();
+    const previousOnLog = vi.fn();
+    const inputOptions = configWithInputOptions?.inputOptions?.({ onLog: previousOnLog });
+    expect(inputOptions?.onLog).toBeDefined();
+
+    inputOptions?.onLog?.(
+      "warn",
+      { code: "EVAL", id: "node_modules/bottleneck/lib/RedisConnection.js" },
+      defaultHandler,
+    );
+    inputOptions?.onLog?.(
+      "warn",
+      { code: "EVAL", id: "@protobufjs/inquire/index.js" },
+      defaultHandler,
+    );
+    inputOptions?.onLog?.(
+      "warn",
+      { code: "EVAL", id: "node_modules/some-other-package/index.js" },
+      defaultHandler,
+    );
+
+    expect(previousOnLog).toHaveBeenCalledTimes(1);
+    expect(previousOnLog).toHaveBeenCalledWith(
+      "warn",
+      { code: "EVAL", id: "node_modules/some-other-package/index.js" },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
   });
 });
