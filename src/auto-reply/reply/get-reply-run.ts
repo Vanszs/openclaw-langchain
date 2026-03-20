@@ -20,7 +20,6 @@ import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
-import { buildAttachmentRetrievalContextNote } from "../attachment-rag.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { buildInboundMediaNote } from "../media-note.js";
@@ -413,6 +412,7 @@ export async function runPreparedReply(
   prefixedBodyBase = prependEvents(prefixedBodyBase);
   let attachmentRetrievalNote: string | undefined;
   try {
+    const { buildAttachmentRetrievalContextNote } = await import("../attachment-rag.runtime.js");
     attachmentRetrievalNote = await buildAttachmentRetrievalContextNote({
       ctx,
       cfg,

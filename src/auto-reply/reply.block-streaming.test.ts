@@ -86,6 +86,29 @@ async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   });
 }
 
+async function waitWithTimeout(params: {
+  promise: Promise<void>;
+  label: string;
+  timeoutMs?: number;
+}) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      params.promise,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${params.label} timed out after ${params.timeoutMs ?? 2_000}ms`)),
+          params.timeoutMs ?? 2_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 describe("block streaming", () => {
   beforeEach(() => {
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
@@ -137,10 +160,14 @@ describe("block streaming", () => {
         disableBlockStreaming: false,
       });
 
-      await onReplyStartCalled;
-      releaseTyping?.();
-
-      const res = await replyPromise;
+      await waitWithTimeout({ promise: onReplyStartCalled, label: "onReplyStart callback" });
+      let res;
+      try {
+        releaseTyping?.();
+        res = await replyPromise;
+      } finally {
+        releaseTyping?.();
+      }
       expect(res).toBeUndefined();
       expect(seen).toEqual(["first\n\nsecond"]);
 
