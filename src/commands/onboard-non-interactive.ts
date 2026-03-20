@@ -7,12 +7,26 @@ import { runNonInteractiveLocalSetup } from "./onboard-non-interactive/local.js"
 import { runNonInteractiveRemoteSetup } from "./onboard-non-interactive/remote.js";
 import type { OnboardOptions } from "./onboard-types.js";
 
+function isBlankInvalidConfigSnapshot(snapshot: {
+  exists: boolean;
+  valid: boolean;
+  raw: string | null;
+}): boolean {
+  return (
+    snapshot.exists &&
+    !snapshot.valid &&
+    typeof snapshot.raw === "string" &&
+    snapshot.raw.trim() === ""
+  );
+}
+
 export async function runNonInteractiveSetup(
   opts: OnboardOptions,
   runtime: RuntimeEnv = defaultRuntime,
 ) {
   const snapshot = await readConfigFileSnapshot();
-  if (snapshot.exists && !snapshot.valid) {
+  const blankConfigRecovery = isBlankInvalidConfigSnapshot(snapshot);
+  if (snapshot.exists && !snapshot.valid && !blankConfigRecovery) {
     runtime.error(
       `Config invalid. Run \`${formatCliCommand("openclaw doctor")}\` to repair it, then re-run setup.`,
     );
@@ -20,7 +34,8 @@ export async function runNonInteractiveSetup(
     return;
   }
 
-  const baseConfig: OpenClawConfig = snapshot.valid ? (snapshot.exists ? snapshot.config : {}) : {};
+  const baseConfig: OpenClawConfig =
+    snapshot.valid || blankConfigRecovery ? (snapshot.exists ? snapshot.config : {}) : {};
   const mode = opts.mode ?? "local";
   if (mode !== "local" && mode !== "remote") {
     runtime.error(`Invalid --mode "${String(mode)}" (use local|remote).`);

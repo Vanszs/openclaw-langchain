@@ -45,6 +45,12 @@ export function parseMemorySourceList(input: string | undefined): MemorySourceSe
   );
 }
 
+export function findInvalidMemorySources(input: string | undefined): string[] {
+  return parseDelimitedList(input).filter(
+    (entry) => !MEMORY_SOURCE_SET.has(entry as MemorySourceSelection),
+  );
+}
+
 export function applyMemoryConfig(
   nextConfig: OpenClawConfig,
   input: MemoryConfigInput,
@@ -57,6 +63,17 @@ export function applyMemoryConfig(
         slots: {
           ...nextConfig.plugins?.slots,
           memory: "none",
+        },
+        entries: {
+          ...nextConfig.plugins?.entries,
+          ...(nextConfig.plugins?.entries?.["memory-langchain"]
+            ? {
+                "memory-langchain": {
+                  ...nextConfig.plugins.entries["memory-langchain"],
+                  enabled: false,
+                },
+              }
+            : {}),
         },
       },
     };
@@ -82,6 +99,20 @@ export function applyMemoryConfig(
   if (input.backend === "memory-core") {
     return {
       ...slotConfig,
+      plugins: {
+        ...slotConfig.plugins,
+        entries: {
+          ...slotConfig.plugins?.entries,
+          ...(slotConfig.plugins?.entries?.["memory-langchain"]
+            ? {
+                "memory-langchain": {
+                  ...slotConfig.plugins.entries["memory-langchain"],
+                  enabled: false,
+                },
+              }
+            : {}),
+        },
+      },
       agents: {
         ...slotConfig.agents,
         defaults: {

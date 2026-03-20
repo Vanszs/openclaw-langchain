@@ -164,10 +164,6 @@ function hashConfigRaw(raw: string | null): string {
     .digest("hex");
 }
 
-function isBlankConfigRaw(raw: string): boolean {
-  return raw.trim().length === 0;
-}
-
 async function tightenStateDirPermissionsIfNeeded(params: {
   configPath: string;
   env: NodeJS.ProcessEnv;
@@ -726,6 +722,31 @@ type ReadConfigFileSnapshotInternalResult = {
   envSnapshotForRestore?: Record<string, string | undefined>;
 };
 
+function configPathExistsAsFile(
+  fsImpl: Pick<typeof import("node:fs"), "statSync">,
+  filePath: string,
+): boolean {
+  try {
+    return fsImpl.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function configPathExistsAsNonFile(
+  fsImpl: Pick<typeof import("node:fs"), "existsSync" | "statSync">,
+  filePath: string,
+): boolean {
+  try {
+    if (!fsImpl.existsSync(filePath)) {
+      return false;
+    }
+    return !fsImpl.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export function createConfigIO(overrides: ConfigIoDeps = {}) {
   const deps = normalizeDeps(overrides);
   const requestedConfigPath = resolveConfigPathForDeps(deps);
@@ -733,7 +754,8 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
     ? [requestedConfigPath]
     : resolveDefaultConfigCandidates(deps.env, deps.homedir);
   const configPath =
-    candidatePaths.find((candidate) => deps.fs.existsSync(candidate)) ?? requestedConfigPath;
+    candidatePaths.find((candidate) => configPathExistsAsFile(deps.fs, candidate)) ??
+    requestedConfigPath;
 
   function loadConfig(): OpenClawConfig {
     try {
@@ -750,10 +772,10 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         }
         return {};
       }
-      const raw = deps.fs.readFileSync(configPath, "utf-8");
-      if (isBlankConfigRaw(raw)) {
-        return {};
+      if (configPathExistsAsNonFile(deps.fs, configPath)) {
+        throw new Error(`Config path is not a file: ${configPath}`);
       }
+      const raw = deps.fs.readFileSync(configPath, "utf-8");
       const parsed = deps.json5.parse(raw);
       const readResolution = resolveConfigForRead(
         resolveConfigIncludesForRead(parsed, configPath, deps),
@@ -924,26 +946,25 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
     }
 
     try {
-      const raw = deps.fs.readFileSync(configPath, "utf-8");
-      const hash = hashConfigRaw(raw);
-      if (isBlankConfigRaw(raw)) {
-        const config = {};
+      if (configPathExistsAsNonFile(deps.fs, configPath)) {
         return {
           snapshot: {
             path: configPath,
             exists: true,
-            raw,
+            raw: null,
             parsed: {},
             resolved: {},
-            valid: true,
-            config,
-            hash,
-            issues: [],
+            valid: false,
+            config: {},
+            hash: hashConfigRaw(null),
+            issues: [{ path: "", message: "Config path exists but is not a file." }],
             warnings: [],
             legacyIssues: [],
           },
         };
       }
+      const raw = deps.fs.readFileSync(configPath, "utf-8");
+      const hash = hashConfigRaw(raw);
       const parsedRes = parseConfigJson5(raw, deps.json5);
       if (!parsedRes.ok) {
         return {

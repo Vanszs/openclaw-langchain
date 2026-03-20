@@ -21,6 +21,19 @@ import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveUserPath } from "../utils.js";
 import { WizardCancelledError, type WizardPrompter } from "./prompts.js";
+
+function isBlankInvalidConfigSnapshot(snapshot: {
+  exists: boolean;
+  valid: boolean;
+  raw: string | null;
+}): boolean {
+  return (
+    snapshot.exists &&
+    !snapshot.valid &&
+    typeof snapshot.raw === "string" &&
+    snapshot.raw.trim() === ""
+  );
+}
 import { resolveSetupSecretInputString } from "./setup.secret-input.js";
 import type { QuickstartGatewayDefaults, WizardFlow } from "./setup.types.js";
 
@@ -85,9 +98,16 @@ export async function runSetupWizard(
   await requireRiskAcknowledgement({ opts, prompter });
 
   const snapshot = await readConfigFileSnapshot();
-  let baseConfig: OpenClawConfig = snapshot.valid ? (snapshot.exists ? snapshot.config : {}) : {};
+  const blankConfigRecovery = isBlankInvalidConfigSnapshot(snapshot);
+  let baseConfig: OpenClawConfig =
+    snapshot.valid || blankConfigRecovery ? (snapshot.exists ? snapshot.config : {}) : {};
 
-  if (snapshot.exists && !snapshot.valid) {
+  if (blankConfigRecovery) {
+    await prompter.note(
+      "Blank config file detected. OpenClaw will reinitialize it during setup.",
+      "Config recovery",
+    );
+  } else if (snapshot.exists && !snapshot.valid) {
     await prompter.note(onboardHelpers.summarizeExistingConfig(baseConfig), "Invalid config");
     if (snapshot.issues.length > 0) {
       await prompter.note(

@@ -208,20 +208,21 @@ export async function resolveLangchainPluginConfig(params: {
     unknown
   >;
   const storage = resolveLangchainPluginStorageStateInternal(params);
+  const env = params.env ?? process.env;
 
   const apiKeyResolution = await resolveConfiguredSecretInputWithFallback({
     config: params.cfg,
-    env: params.env ?? process.env,
+    env,
     value: raw.apiKeySecretRef,
     path: `plugins.entries.${LANGCHAIN_MEMORY_PLUGIN_ID}.config.apiKeySecretRef`,
     unresolvedReasonStyle: "detailed",
     readFallback: () => {
       const provider = normalizeString(raw.embeddingProvider, "openai").toLowerCase();
       if (provider === "openai") {
-        return process.env.OPENAI_API_KEY?.trim() || undefined;
+        return env.OPENAI_API_KEY?.trim() || undefined;
       }
       if (provider === "openrouter") {
-        return process.env.OPENROUTER_API_KEY?.trim() || undefined;
+        return env.OPENROUTER_API_KEY?.trim() || undefined;
       }
       return undefined;
     },

@@ -293,6 +293,50 @@ describe("runSetupWizard", () => {
     expect(prompter.outro).toHaveBeenCalled();
   });
 
+  it("recovers from a blank config file during setup", async () => {
+    readConfigFileSnapshot.mockResolvedValueOnce({
+      path: "/tmp/.openclaw/openclaw.json",
+      exists: true,
+      raw: "",
+      parsed: {},
+      resolved: {},
+      valid: false,
+      config: {},
+      issues: [{ path: "", message: "JSON5 parse failed: invalid end of input" }],
+      warnings: [],
+      legacyIssues: [],
+    });
+
+    const select = vi.fn(
+      async (_params: WizardSelectParams<unknown>) => "quickstart",
+    ) as unknown as WizardPrompter["select"];
+    const multiselect: WizardPrompter["multiselect"] = vi.fn(async () => []);
+    const prompter = buildWizardPrompter({ select, multiselect });
+    const runtime = createRuntime({ throwsOnExit: true });
+
+    await runSetupWizard(
+      {
+        acceptRisk: true,
+        flow: "quickstart",
+        authChoice: "skip",
+        installDaemon: false,
+        skipProviders: true,
+        skipSkills: true,
+        skipSearch: true,
+        skipHealth: true,
+        skipUi: true,
+      },
+      runtime,
+      prompter,
+    );
+
+    expect(prompter.note).toHaveBeenCalledWith(
+      "Blank config file detected. OpenClaw will reinitialize it during setup.",
+      "Config recovery",
+    );
+    expect(writeConfigFile).toHaveBeenCalled();
+  });
+
   it("skips prompts and setup steps when flags are set", async () => {
     const select = vi.fn(
       async (_params: WizardSelectParams<unknown>) => "quickstart",

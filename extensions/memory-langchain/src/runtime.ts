@@ -741,10 +741,10 @@ export class LangchainMemoryRuntime {
         const agentWorkspaceDir = resolveWorkspaceForAgent(cfg, agentId, workspaceDir);
         const manager = new LangchainMemoryManager(cfg, agentId, agentWorkspaceDir, this.logger);
         await manager.sync({ reason: "service" });
+        this.touchedAgents.delete(agentId);
       } catch (error) {
         this.logger?.warn?.(`memory-langchain: sync failed for ${agentId}: ${String(error)}`);
       }
-      this.touchedAgents.delete(agentId);
     }
   }
 

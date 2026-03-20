@@ -369,4 +369,39 @@ describe("LangchainMemoryRuntime", () => {
     expect(first.type).toBe("queue_item_failure");
     expect(last.attempt).toBe(3);
   });
+
+  it("keeps non-default agents queued for retry when sync fails", async () => {
+    const runtime = createLangchainMemoryRuntime();
+
+    await runtime.enqueueSessionMessage({
+      cfg,
+      agentId: "research",
+      sessionKey: "agent:research:main",
+      role: "assistant",
+      message: { content: "ringkasan release" },
+    });
+
+    managerSyncMock
+      .mockRejectedValueOnce(new Error("temporary sync outage"))
+      .mockResolvedValue(undefined);
+
+    await runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+    await runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+
+    expect(managerCtorMock).toHaveBeenNthCalledWith(
+      1,
+      cfg,
+      "research",
+      path.join(tempDir, "workspace-research"),
+      undefined,
+    );
+    expect(managerCtorMock).toHaveBeenNthCalledWith(
+      2,
+      cfg,
+      "research",
+      path.join(tempDir, "workspace-research"),
+      undefined,
+    );
+    expect(managerSyncMock).toHaveBeenCalledTimes(2);
+  });
 });

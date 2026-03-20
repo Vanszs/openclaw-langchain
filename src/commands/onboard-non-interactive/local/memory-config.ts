@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../../../config/config.js";
 import type { RuntimeEnv } from "../../../runtime.js";
 import {
   applyMemoryConfig,
+  findInvalidMemorySources,
   parseDelimitedList,
   parseMemorySourceList,
 } from "../../memory-config-shared.js";
@@ -67,6 +68,14 @@ export function applyNonInteractiveMemoryConfig(params: {
   const scope = opts.memoryScope ?? "prefer_session";
   if (scope !== "global" && scope !== "session" && scope !== "prefer_session") {
     runtime.error('Invalid --memory-scope. Use "global", "session", or "prefer_session".');
+    runtime.exit(1);
+    return null;
+  }
+  const invalidSources = findInvalidMemorySources(opts.memorySources);
+  if (invalidSources.length > 0) {
+    runtime.error(
+      `Invalid --memory-sources entries: ${invalidSources.join(", ")}. Use memory, sessions, repo, docs, chat, email.`,
+    );
     runtime.exit(1);
     return null;
   }

@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
 import {
   applyMemoryConfig,
+  findInvalidMemorySources,
   parseDelimitedList,
   parseMemorySourceList,
   type MemoryBackendSelection,
@@ -86,6 +87,12 @@ export async function promptMemoryConfig(
         Array.isArray(currentMemorySearch?.sources) && currentMemorySearch.sources.length > 0
           ? currentMemorySearch.sources.join(", ")
           : "memory, repo, docs, chat, email, sessions",
+      validate: (value) => {
+        const invalid = findInvalidMemorySources(value);
+        return invalid.length > 0
+          ? `Unknown source(s): ${invalid.join(", ")}. Use memory, sessions, repo, docs, chat, email.`
+          : undefined;
+      },
     })) ?? "",
   ).trim();
 

@@ -43,7 +43,7 @@ describe("config io paths", () => {
     });
   });
 
-  it("treats a blank config file as an empty config", async () => {
+  it("fails closed on a blank config file for general config loads", async () => {
     await withTempHome(async (home) => {
       const configDir = path.join(home, ".openclaw");
       await fs.mkdir(configDir, { recursive: true });
@@ -52,13 +52,30 @@ describe("config io paths", () => {
 
       const io = createIoForHome(home);
       expect(io.configPath).toBe(configPath);
-      expect(io.loadConfig()).toEqual({});
+      expect(() => io.loadConfig()).toThrow(/JSON5/);
       await expect(io.readConfigFileSnapshot()).resolves.toMatchObject({
         path: configPath,
         exists: true,
-        valid: true,
-        config: {},
-        issues: [],
+        valid: false,
+        issues: [{ path: "", message: expect.stringContaining("JSON5 parse failed") }],
+      });
+    });
+  });
+
+  it("reports a dedicated error when the config path is not a file", async () => {
+    await withTempHome(async (home) => {
+      const configDir = path.join(home, ".openclaw");
+      const configPath = path.join(configDir, "openclaw.json");
+      await fs.mkdir(configPath, { recursive: true });
+
+      const io = createIoForHome(home);
+      expect(io.configPath).toBe(configPath);
+      expect(() => io.loadConfig()).toThrow(/Config path is not a file/);
+      await expect(io.readConfigFileSnapshot()).resolves.toMatchObject({
+        path: configPath,
+        exists: true,
+        valid: false,
+        issues: [{ path: "", message: "Config path exists but is not a file." }],
       });
     });
   });

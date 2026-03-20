@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../../../../src/config/config.js";
 import {
   createTestRegistry,
   registerSessionBindingAdapter,
@@ -8,7 +9,6 @@ import {
 } from "../../../../../test/helpers/extensions/matrix-route-test-support.ts";
 import { matrixPlugin } from "../../channel.js";
 import { resolveMatrixInboundRoute } from "./route.js";
-import type { OpenClawConfig } from "../../../../../src/config/config.js";
 
 const baseCfg = {
   session: { mainKey: "main" },
