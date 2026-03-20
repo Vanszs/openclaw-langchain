@@ -228,4 +228,70 @@ describe("describeImageWithModel", () => {
     );
     expect(setRuntimeApiKeyMock).toHaveBeenCalledWith("google", "oauth-test");
   });
+
+  it("injects configured OpenRouter provider routing into image completion payloads", async () => {
+    discoverModelsMock.mockReturnValue({
+      find: vi.fn(() => ({
+        provider: "openrouter",
+        id: "qwen/qwen-2.5-vl-7b-instruct",
+        input: ["text", "image"],
+        maxTokens: 4096,
+      })),
+    });
+    completeMock.mockResolvedValue({
+      role: "assistant",
+      api: "openai-completions",
+      provider: "openrouter",
+      model: "qwen/qwen-2.5-vl-7b-instruct",
+      stopReason: "stop",
+      timestamp: Date.now(),
+      content: [{ type: "text", text: "ocr ok" }],
+    });
+
+    await describeImageWithModel({
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openrouter/qwen/qwen-2.5-vl-7b-instruct": {
+                params: {
+                  provider: {
+                    order: ["deepinfra"],
+                    allowFallbacks: false,
+                    requireParameters: true,
+                    quantizations: ["bf16"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      agentDir: "/tmp/openclaw-agent",
+      provider: "openrouter",
+      model: "qwen/qwen-2.5-vl-7b-instruct",
+      buffer: Buffer.from("png-bytes"),
+      fileName: "image.png",
+      mime: "image/png",
+      prompt: "Describe the image.",
+      timeoutMs: 1000,
+    });
+
+    const options = completeMock.mock.calls[0]?.[2] as
+      | { onPayload?: (payload: unknown, model: unknown) => Promise<unknown> }
+      | undefined;
+    expect(options?.onPayload).toBeTypeOf("function");
+
+    const payload = {};
+    const routedPayload = (await options?.onPayload?.(payload, {
+      provider: "openrouter",
+      id: "qwen/qwen-2.5-vl-7b-instruct",
+    })) as Record<string, unknown>;
+    expect((routedPayload.provider ?? payload["provider"]) as Record<string, unknown>).toEqual({
+      order: ["deepinfra"],
+      allow_fallbacks: false,
+      require_parameters: true,
+      quantizations: ["bf16"],
+    });
+  });
 });

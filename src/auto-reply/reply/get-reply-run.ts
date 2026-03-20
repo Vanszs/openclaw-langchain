@@ -20,6 +20,7 @@ import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
+import { buildAttachmentRetrievalContextNote } from "../attachment-rag.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { buildInboundMediaNote } from "../media-note.js";
@@ -360,7 +361,24 @@ export async function runPreparedReply(
   const prependEvents = (body: string) => (eventsBlock ? `${eventsBlock}\n\n${body}` : body);
   const bodyWithEvents = prependEvents(effectiveBaseBody);
   prefixedBodyBase = prependEvents(prefixedBodyBase);
-  prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, sessionCtx.UntrustedContext);
+  let attachmentRetrievalNote: string | undefined;
+  try {
+    attachmentRetrievalNote = await buildAttachmentRetrievalContextNote({
+      ctx,
+      cfg,
+      agentDir,
+      query: baseBodyTrimmed || "Summarize the attached file and extract the most relevant facts.",
+    });
+  } catch (error) {
+    logVerbose(
+      `attachment-rag: failed, continuing without retrieved file context: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const untrustedContext = [
+    ...(Array.isArray(sessionCtx.UntrustedContext) ? sessionCtx.UntrustedContext : []),
+    ...(attachmentRetrievalNote ? [attachmentRetrievalNote] : []),
+  ];
+  prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, untrustedContext);
   const threadStarterBody = ctx.ThreadStarterBody?.trim();
   const threadHistoryBody = ctx.ThreadHistoryBody?.trim();
   const threadContextNote = threadHistoryBody

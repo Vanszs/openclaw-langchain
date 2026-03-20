@@ -8,6 +8,7 @@ import {
 } from "../../agents/model-auth.js";
 import { normalizeModelRef } from "../../agents/model-selection.js";
 import { ensureOpenClawModelsJson } from "../../agents/models-config.js";
+import { buildConfiguredRequestPayloadOptions } from "../../agents/openrouter-provider-routing.js";
 import { coerceImageAssistantText } from "../../agents/tools/image-tool.helpers.js";
 import type {
   ImageDescriptionRequest,
@@ -191,6 +192,11 @@ export async function describeImagesWithModel(
   const message = await complete(model, context, {
     apiKey,
     maxTokens: resolveImageToolMaxTokens(model.maxTokens, params.maxTokens ?? 512),
+    ...buildConfiguredRequestPayloadOptions({
+      cfg: params.cfg,
+      provider: model.provider,
+      modelId: model.id,
+    }),
   });
   const text = coerceImageAssistantText({
     message,

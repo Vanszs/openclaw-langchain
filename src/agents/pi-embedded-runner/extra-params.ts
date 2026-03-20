@@ -7,6 +7,7 @@ import {
   prepareProviderExtraParams,
   wrapProviderStreamFn,
 } from "../../plugins/provider-runtime.js";
+import { resolveModelExtraParams } from "../model-extra-params.js";
 import {
   createAnthropicBetaHeadersWrapper,
   createAnthropicFastModeWrapper,
@@ -43,30 +44,7 @@ export function resolveExtraParams(params: {
   modelId: string;
   agentId?: string;
 }): Record<string, unknown> | undefined {
-  const modelKey = `${params.provider}/${params.modelId}`;
-  const modelConfig = params.cfg?.agents?.defaults?.models?.[modelKey];
-  const globalParams = modelConfig?.params ? { ...modelConfig.params } : undefined;
-  const agentParams =
-    params.agentId && params.cfg?.agents?.list
-      ? params.cfg.agents.list.find((agent) => agent.id === params.agentId)?.params
-      : undefined;
-
-  if (!globalParams && !agentParams) {
-    return undefined;
-  }
-
-  const merged = Object.assign({}, globalParams, agentParams);
-  const resolvedParallelToolCalls = resolveAliasedParamValue(
-    [globalParams, agentParams],
-    "parallel_tool_calls",
-    "parallelToolCalls",
-  );
-  if (resolvedParallelToolCalls !== undefined) {
-    merged.parallel_tool_calls = resolvedParallelToolCalls;
-    delete merged.parallelToolCalls;
-  }
-
-  return merged;
+  return resolveModelExtraParams(params);
 }
 
 type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {

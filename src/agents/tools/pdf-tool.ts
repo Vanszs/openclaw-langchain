@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { extractPdfContent, type PdfExtractedContent } from "../../media/pdf-extract.js";
 import { loadWebMediaRaw } from "../../media/web-media.js";
 import { resolveUserPath } from "../../utils.js";
+import { buildConfiguredRequestPayloadOptions } from "../openrouter-provider-routing.js";
 import {
   coerceImageModelConfig,
   type ImageModelConfig,
@@ -260,6 +261,11 @@ async function runPdfPrompt(params: {
         const message = await complete(model, context, {
           apiKey,
           maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+          ...buildConfiguredRequestPayloadOptions({
+            cfg: effectiveCfg,
+            provider,
+            modelId,
+          }),
         });
         const text = coercePdfAssistantText({ message, provider, model: modelId });
         return { text, provider, model: modelId, native: false };
@@ -269,6 +275,11 @@ async function runPdfPrompt(params: {
       const message = await complete(model, context, {
         apiKey,
         maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+        ...buildConfiguredRequestPayloadOptions({
+          cfg: effectiveCfg,
+          provider,
+          modelId,
+        }),
       });
       const text = coercePdfAssistantText({ message, provider, model: modelId });
       return { text, provider, model: modelId, native: false };

@@ -520,6 +520,73 @@ describe("createPdfTool", () => {
     });
   });
 
+  it("injects configured OpenRouter provider routing into PDF fallback payloads", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      await stubPdfToolInfra(agentDir, {
+        provider: "openrouter",
+        input: ["text"],
+      });
+
+      const extractModule = await import("../../media/pdf-extract.js");
+      vi.spyOn(extractModule, "extractPdfContent").mockResolvedValue({
+        text: "Extracted content",
+        images: [],
+      });
+
+      completeMock.mockResolvedValue({
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "fallback summary" }],
+      } as never);
+
+      const cfg = {
+        agents: {
+          defaults: {
+            pdfModel: {
+              primary: "openrouter/openai/gpt-oss-120b",
+            },
+            models: {
+              "openrouter/openai/gpt-oss-120b": {
+                params: {
+                  provider: {
+                    order: ["deepinfra"],
+                    allowFallbacks: false,
+                    requireParameters: true,
+                    quantizations: ["bf16"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig;
+
+      const tool = requirePdfTool(createPdfTool({ config: cfg, agentDir }));
+
+      await tool.execute("t1", {
+        prompt: "summarize",
+        pdf: "/tmp/doc.pdf",
+      });
+
+      const options = completeMock.mock.calls[0]?.[2] as
+        | { onPayload?: (payload: unknown, model: unknown) => Promise<unknown> }
+        | undefined;
+      expect(options?.onPayload).toBeTypeOf("function");
+
+      const payload = {};
+      const routedPayload = (await options?.onPayload?.(payload, {
+        provider: "openrouter",
+        id: "openai/gpt-oss-120b",
+      })) as Record<string, unknown>;
+      expect((routedPayload.provider ?? payload["provider"]) as Record<string, unknown>).toEqual({
+        order: ["deepinfra"],
+        allow_fallbacks: false,
+        require_parameters: true,
+        quantizations: ["bf16"],
+      });
+    });
+  });
+
   it("tool parameters have correct schema shape", async () => {
     await withAnthropicPdfTool(async (tool) => {
       const schema = tool.parameters;
