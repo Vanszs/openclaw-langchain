@@ -14,7 +14,7 @@
     "embeddingProvider": {
       "label": "Embedding Provider",
       "placeholder": "openai",
-      "help": "LangChain embedding provider id (v1 supports openai)"
+      "help": "LangChain embedding provider id (supported: openai, openrouter)"
     },
     "embeddingModel": {
       "label": "Embedding Model",
@@ -63,7 +63,8 @@
         "type": "string"
       },
       "embeddingProvider": {
-        "type": "string"
+        "type": "string",
+        "enum": ["openai", "openrouter"]
       },
       "embeddingModel": {
         "type": "string"

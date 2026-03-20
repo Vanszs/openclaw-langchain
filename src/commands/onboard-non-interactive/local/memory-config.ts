@@ -41,9 +41,13 @@ export function applyNonInteractiveMemoryConfig(params: {
   }
 
   const embeddingProvider = opts.memoryEmbeddingProvider?.trim() || "openai";
-  if (backend === "memory-langchain" && embeddingProvider !== "openai") {
+  if (
+    backend === "memory-langchain" &&
+    embeddingProvider !== "openai" &&
+    embeddingProvider !== "openrouter"
+  ) {
     runtime.error(
-      `memory-langchain non-interactive setup currently supports only --memory-embedding-provider openai (received "${embeddingProvider}").`,
+      `memory-langchain non-interactive setup currently supports only --memory-embedding-provider in [openai, openrouter] (received "${embeddingProvider}").`,
     );
     runtime.exit(1);
     return null;

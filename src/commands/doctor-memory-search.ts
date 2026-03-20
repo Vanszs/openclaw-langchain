@@ -181,16 +181,19 @@ async function noteLangchainMemoryHealth(cfg: OpenClawConfig): Promise<void> {
     typeof raw.embeddingProvider === "string" && raw.embeddingProvider.trim()
       ? raw.embeddingProvider.trim().toLowerCase()
       : "openai";
-  if (embeddingProvider !== "openai") {
+  if (embeddingProvider !== "openai" && embeddingProvider !== "openrouter") {
     note(
       [
-        `memory-langchain only supports embeddingProvider="openai" right now (found "${embeddingProvider}").`,
+        `memory-langchain only supports embeddingProvider in [openai, openrouter] right now (found "${embeddingProvider}").`,
         `Fix: ${formatCliCommand("openclaw configure --section memory")}`,
       ].join("\n"),
       "Memory search",
     );
     return;
   }
+  const providerEnvVar =
+    embeddingProvider === "openrouter" ? "OPENROUTER_API_KEY" : "OPENAI_API_KEY";
+  const providerLabel = embeddingProvider === "openrouter" ? "OpenRouter" : "OpenAI";
 
   const apiKeyResolution = await resolveConfiguredSecretInputWithFallback({
     config: cfg,
@@ -198,16 +201,16 @@ async function noteLangchainMemoryHealth(cfg: OpenClawConfig): Promise<void> {
     value: raw.apiKeySecretRef,
     path: "plugins.entries.memory-langchain.config.apiKeySecretRef",
     unresolvedReasonStyle: "detailed",
-    readFallback: () => process.env.OPENAI_API_KEY?.trim() || undefined,
+    readFallback: () => process.env[providerEnvVar]?.trim() || undefined,
   });
   if (!apiKeyResolution.secretRefConfigured && !apiKeyResolution.value) {
     note(
       [
-        "memory-langchain is active but no OpenAI embedding API key was found.",
+        `memory-langchain is active but no ${providerLabel} embedding API key was found.`,
         apiKeyResolution.unresolvedRefReason ?? null,
         "",
         "Fix (pick one):",
-        "- Set OPENAI_API_KEY in the Gateway environment",
+        `- Set ${providerEnvVar} in the Gateway environment`,
         `- Configure plugins.entries.memory-langchain.config.apiKeySecretRef`,
         `- Run ${formatCliCommand("openclaw configure --section memory")}`,
         "",

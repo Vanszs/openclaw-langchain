@@ -89,7 +89,7 @@ export function applyMemoryConfig(
             ...currentLangchain,
             chromaUrl: input.chromaUrl || "http://127.0.0.1:8000",
             collectionPrefix: input.collectionPrefix || "openclaw",
-            embeddingProvider: input.embeddingProvider || "openai",
+            embeddingProvider: input.embeddingProvider === "openrouter" ? "openrouter" : "openai",
             embeddingModel: input.embeddingModel || "text-embedding-3-small",
             ...(input.apiKeySecretRef ? { apiKeySecretRef: input.apiKeySecretRef } : {}),
           },

@@ -50,6 +50,7 @@ describe("noteMemorySearchHealth", () => {
   }
 
   beforeEach(() => {
+    vi.unstubAllEnvs();
     note.mockClear();
     resolveDefaultAgentId.mockClear();
     resolveAgentDir.mockClear();
@@ -264,6 +265,47 @@ describe("noteMemorySearchHealth", () => {
     expect(note).toHaveBeenCalledTimes(1);
     const message = String(note.mock.calls[0]?.[0] ?? "");
     expect(message).toContain("openclaw configure --section model");
+  });
+
+  it("uses OpenRouter env guidance when memory-langchain is set to openrouter", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const cfg = {
+      plugins: {
+        slots: { memory: "memory-langchain" },
+        entries: {
+          "memory-langchain": {
+            config: { embeddingProvider: "openrouter" },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    await noteMemorySearchHealth(cfg, {});
+
+    expect(note).toHaveBeenCalled();
+    const message = String(note.mock.calls[0]?.[0] ?? "");
+    expect(message).toContain("OpenRouter");
+    expect(message).toContain("OPENROUTER_API_KEY");
+  });
+
+  it("warns when memory-langchain embedding provider is unsupported", async () => {
+    const cfg = {
+      plugins: {
+        slots: { memory: "memory-langchain" },
+        entries: {
+          "memory-langchain": {
+            config: { embeddingProvider: "voyage" },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    await noteMemorySearchHealth(cfg, {});
+
+    expect(note).toHaveBeenCalled();
+    const message = String(note.mock.calls[0]?.[0] ?? "");
+    expect(message).toContain("embeddingProvider in [openai, openrouter]");
   });
 
   it("still warns in auto mode when only ollama credentials exist", async () => {

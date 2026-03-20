@@ -220,6 +220,9 @@ export async function resolveLangchainPluginConfig(params: {
       if (provider === "openai") {
         return process.env.OPENAI_API_KEY?.trim() || undefined;
       }
+      if (provider === "openrouter") {
+        return process.env.OPENROUTER_API_KEY?.trim() || undefined;
+      }
       return undefined;
     },
   });

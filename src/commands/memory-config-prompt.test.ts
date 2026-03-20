@@ -28,12 +28,12 @@ describe("promptMemoryConfig", () => {
       },
     };
     const prompter = createPrompter({
-      selectValues: ["memory-langchain", "global"],
+      selectValues: ["memory-langchain", "openrouter", "global"],
       textValues: [
         "http://127.0.0.1:8000",
         "openclaw",
-        "text-embedding-3-small",
-        "${OPENAI_API_KEY}",
+        "text-embedding-3-large",
+        "${OPENROUTER_API_KEY}",
         "repo, docs, sessions",
         "/workspace/app, /workspace/docs",
         "/workspace/mail",
@@ -48,9 +48,9 @@ describe("promptMemoryConfig", () => {
       config: {
         chromaUrl: "http://127.0.0.1:8000",
         collectionPrefix: "openclaw",
-        embeddingProvider: "openai",
-        embeddingModel: "text-embedding-3-small",
-        apiKeySecretRef: "${OPENAI_API_KEY}",
+        embeddingProvider: "openrouter",
+        embeddingModel: "text-embedding-3-large",
+        apiKeySecretRef: "${OPENROUTER_API_KEY}",
       },
     });
     expect(result.agents?.defaults?.memorySearch).toMatchObject({

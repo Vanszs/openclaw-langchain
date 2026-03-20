@@ -53,6 +53,34 @@ export async function promptMemoryConfig(
       currentSlot === "memory-langchain" || currentSlot === "none" ? currentSlot : "memory-core",
   });
 
+  if (backend === "none") {
+    return applyMemoryConfig(nextConfig, {
+      backend,
+      workspaceDir,
+    });
+  }
+
+  const embeddingProvider = await prompter.select<string>({
+    message: "Embedding provider",
+    options: [
+      {
+        value: "openai",
+        label: "OpenAI",
+        hint: "Uses OPENAI_API_KEY or configured SecretRef",
+      },
+      {
+        value: "openrouter",
+        label: "OpenRouter",
+        hint: "Uses OPENROUTER_API_KEY or configured SecretRef",
+      },
+    ],
+    initialValue:
+      typeof currentLangchain.embeddingProvider === "string" &&
+      currentLangchain.embeddingProvider.trim().toLowerCase() === "openrouter"
+        ? "openrouter"
+        : "openai",
+  });
+
   const chromaUrl = String(
     (await prompter.text({
       message: "Chroma URL",
@@ -156,7 +184,7 @@ export async function promptMemoryConfig(
     workspaceDir,
     chromaUrl: chromaUrl || "http://127.0.0.1:8000",
     collectionPrefix: collectionPrefix || "openclaw",
-    embeddingProvider: "openai",
+    embeddingProvider,
     embeddingModel: embeddingModel || "text-embedding-3-small",
     apiKeySecretRef: apiKeySecretRef || undefined,
     sources: parseMemorySourceList(sources),
