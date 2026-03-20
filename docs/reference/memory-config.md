@@ -14,6 +14,11 @@ This page covers the full configuration surface for OpenClaw memory search. For
 the conceptual overview (file layout, memory tools, when to write memory, and the
 automatic flush), see [Memory](/concepts/memory).
 
+This page documents the built-in `agents.defaults.memorySearch` system. If you
+are using the separate `memory-langchain` plugin, its OpenRouter support is
+configured under `plugins.entries.memory-langchain.config.embeddingProvider`
+and is separate from OpenRouter model routing for chat completions.
+
 ## Memory search defaults
 
 - Enabled by default.

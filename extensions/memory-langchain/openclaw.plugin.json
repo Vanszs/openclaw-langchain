@@ -14,7 +14,7 @@
     "embeddingProvider": {
       "label": "Embedding Provider",
       "placeholder": "openai",
-      "help": "LangChain embedding provider id (supported: openai, openrouter)"
+      "help": "memory-langchain embedding provider id (supported: openai, openrouter)"
     },
     "embeddingModel": {
       "label": "Embedding Model",

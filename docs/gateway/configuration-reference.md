@@ -2431,7 +2431,7 @@ See [Local Models](/gateway/local-models). TL;DR: run MiniMax M2.5 via LM Studio
 - `plugins.entries.memory-langchain.config`: LangChain + Chroma memory backend settings when `plugins.slots.memory = "memory-langchain"`.
   - `chromaUrl`: Chroma HTTP endpoint.
   - `collectionPrefix`: collection name prefix for agent-scoped indexes.
-  - `embeddingProvider`: LangChain embedding provider id (v1 currently expects `openai`).
+  - `embeddingProvider`: `memory-langchain` embedding provider id (`openai` or `openrouter`).
   - `embeddingModel`: embedding model id such as `text-embedding-3-small`.
   - `apiKeySecretRef`: plaintext, `${ENV_VAR}`, or SecretRef for the embedding API key.
   - `chunkSize`, `chunkOverlap`, `batchSize`, `syncIntervalSec`, `queueDir`: ingest and queue tuning.

@@ -35,3 +35,4 @@ openclaw onboard --auth-choice apiKey --token-provider openrouter --token "$OPEN
 - Model refs are `openrouter/<provider>/<model>`.
 - For more model/provider options, see [/concepts/model-providers](/concepts/model-providers).
 - OpenRouter uses a Bearer token with your API key under the hood.
+- This page covers OpenRouter as a chat/model provider. If you are configuring the `memory-langchain` plugin for embeddings, use `plugins.entries.memory-langchain.config.embeddingProvider: "openrouter"` instead of `agents.defaults.model`.
