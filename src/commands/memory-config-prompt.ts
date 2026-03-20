@@ -17,8 +17,8 @@ export async function promptMemoryConfig(
 ): Promise<OpenClawConfig> {
   await prompter.note(
     [
-      "OpenClaw stays in charge of gateway, channels, sessions, and agent orchestration.",
-      "LangChain.js is only used here for ingest, chunking, embeddings, Chroma storage, and retrieval.",
+      "OpenClaw owns memory orchestration, source selection, recall behavior, and memory-tool integration.",
+      "Choose whether OpenClaw should use its built-in backend, delegate indexing to LangChain + Chroma, or disable memory.",
     ].join("\n"),
     "Memory / RAG",
   );
@@ -35,13 +35,13 @@ export async function promptMemoryConfig(
     options: [
       {
         value: "memory-core",
-        label: "Built-in",
-        hint: "Default memory search without LangChain/Chroma",
+        label: "Built-in (OpenClaw)",
+        hint: "OpenClaw handles indexing, storage, and retrieval itself",
       },
       {
         value: "memory-langchain",
         label: "LangChain + Chroma",
-        hint: "Chunk, embed, and retrieve with Chroma-backed RAG",
+        hint: "OpenClaw orchestrates memory; LangChain + Chroma handle chunking and vector retrieval",
       },
       {
         value: "none",
@@ -60,69 +60,25 @@ export async function promptMemoryConfig(
     });
   }
 
-  const embeddingProvider = await prompter.select<string>({
-    message: "Embedding provider",
-    options: [
-      {
-        value: "openai",
-        label: "OpenAI",
-        hint: "Uses OPENAI_API_KEY or configured SecretRef",
-      },
-      {
-        value: "openrouter",
-        label: "OpenRouter",
-        hint: "Uses OPENROUTER_API_KEY or configured SecretRef",
-      },
-    ],
-    initialValue:
-      typeof currentLangchain.embeddingProvider === "string" &&
-      currentLangchain.embeddingProvider.trim().toLowerCase() === "openrouter"
-        ? "openrouter"
-        : "openai",
-  });
-
-  const chromaUrl = String(
-    (await prompter.text({
-      message: "Chroma URL",
-      initialValue:
-        typeof currentLangchain.chromaUrl === "string"
-          ? currentLangchain.chromaUrl
-          : "http://127.0.0.1:8000",
-    })) ?? "",
-  ).trim();
-
-  const collectionPrefix = String(
-    (await prompter.text({
-      message: "Collection prefix",
-      initialValue:
-        typeof currentLangchain.collectionPrefix === "string"
-          ? currentLangchain.collectionPrefix
-          : "openclaw",
-    })) ?? "",
-  ).trim();
-
-  const embeddingModel = String(
-    (await prompter.text({
-      message: "Embedding model",
-      initialValue:
-        typeof currentLangchain.embeddingModel === "string"
-          ? currentLangchain.embeddingModel
-          : "text-embedding-3-small",
-    })) ?? "",
-  ).trim();
-
-  const apiKeySecretRef = String(
-    (await prompter.text({
-      message: "Embedding API key / SecretRef",
-      placeholder: "${OPENAI_API_KEY}",
-      initialValue:
-        typeof currentLangchain.apiKeySecretRef === "string"
-          ? currentLangchain.apiKeySecretRef
-          : "",
-    })) ?? "",
-  ).trim();
-
   const currentMemorySearch = nextConfig.agents?.defaults?.memorySearch;
+  if (backend === "memory-core") {
+    await prompter.note(
+      [
+        "OpenClaw will handle indexing, storage, and retrieval with the built-in memory backend.",
+        "The next prompts configure what OpenClaw indexes and how recall behaves.",
+      ].join("\n"),
+      "Built-in Memory",
+    );
+  } else {
+    await prompter.note(
+      [
+        "OpenClaw still handles gateway, channels, sessions, agent orchestration, and memory-tool wiring.",
+        "LangChain + Chroma take over chunking, embedding calls, vector storage, and retrieval for indexed content.",
+      ].join("\n"),
+      "LangChain Memory",
+    );
+  }
+
   const sources = String(
     (await prompter.text({
       message: "Sources to index (comma-separated)",
@@ -178,6 +134,88 @@ export async function promptMemoryConfig(
         ? currentMemorySearch.query.scope
         : "prefer_session",
   });
+
+  if (backend === "memory-core") {
+    return applyMemoryConfig(nextConfig, {
+      backend,
+      workspaceDir,
+      sources: parseMemorySourceList(sources),
+      roots: parseDelimitedList(roots),
+      extraPaths: parseDelimitedList(extraPaths),
+      scope,
+    });
+  }
+
+  await prompter.note(
+    [
+      "The remaining prompts configure the LangChain backend itself.",
+      "These settings control embeddings, Chroma storage, and collection naming.",
+    ].join("\n"),
+    "LangChain Backend",
+  );
+
+  const embeddingProvider = await prompter.select<string>({
+    message: "Embedding provider for memory-langchain",
+    options: [
+      {
+        value: "openai",
+        label: "OpenAI",
+        hint: "Uses OPENAI_API_KEY or configured SecretRef",
+      },
+      {
+        value: "openrouter",
+        label: "OpenRouter",
+        hint: "Uses OPENROUTER_API_KEY for memory-langchain embeddings",
+      },
+    ],
+    initialValue:
+      typeof currentLangchain.embeddingProvider === "string" &&
+      currentLangchain.embeddingProvider.trim().toLowerCase() === "openrouter"
+        ? "openrouter"
+        : "openai",
+  });
+
+  const chromaUrl = String(
+    (await prompter.text({
+      message: "Chroma URL",
+      initialValue:
+        typeof currentLangchain.chromaUrl === "string"
+          ? currentLangchain.chromaUrl
+          : "http://127.0.0.1:8000",
+    })) ?? "",
+  ).trim();
+
+  const collectionPrefix = String(
+    (await prompter.text({
+      message: "Collection prefix",
+      initialValue:
+        typeof currentLangchain.collectionPrefix === "string"
+          ? currentLangchain.collectionPrefix
+          : "openclaw",
+    })) ?? "",
+  ).trim();
+
+  const embeddingModel = String(
+    (await prompter.text({
+      message: "Embedding model",
+      initialValue:
+        typeof currentLangchain.embeddingModel === "string"
+          ? currentLangchain.embeddingModel
+          : "text-embedding-3-small",
+    })) ?? "",
+  ).trim();
+
+  const apiKeySecretRef = String(
+    (await prompter.text({
+      message: "Embedding API key / SecretRef",
+      placeholder:
+        embeddingProvider === "openrouter" ? "${OPENROUTER_API_KEY}" : "${OPENAI_API_KEY}",
+      initialValue:
+        typeof currentLangchain.apiKeySecretRef === "string"
+          ? currentLangchain.apiKeySecretRef
+          : "",
+    })) ?? "",
+  ).trim();
 
   return applyMemoryConfig(nextConfig, {
     backend,

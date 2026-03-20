@@ -67,14 +67,33 @@ export function applyMemoryConfig(
     selectedId: input.backend,
     selectedKind: "memory",
   }).config;
+  const currentMemorySearch = slotConfig.agents?.defaults?.memorySearch;
+  const nextMemorySearch = {
+    ...currentMemorySearch,
+    ...(input.sources ? { sources: input.sources } : {}),
+    roots: input.roots && input.roots.length > 0 ? input.roots : [input.workspaceDir],
+    ...(input.extraPaths ? { extraPaths: input.extraPaths } : {}),
+    query: {
+      ...currentMemorySearch?.query,
+      scope: input.scope || "prefer_session",
+    },
+  };
 
   if (input.backend === "memory-core") {
-    return slotConfig;
+    return {
+      ...slotConfig,
+      agents: {
+        ...slotConfig.agents,
+        defaults: {
+          ...slotConfig.agents?.defaults,
+          memorySearch: nextMemorySearch,
+        },
+      },
+    };
   }
 
   const currentLangchain = (slotConfig.plugins?.entries?.["memory-langchain"]?.config ??
     {}) satisfies Record<string, unknown>;
-  const currentMemorySearch = slotConfig.agents?.defaults?.memorySearch;
 
   return {
     ...slotConfig,
@@ -100,16 +119,7 @@ export function applyMemoryConfig(
       ...slotConfig.agents,
       defaults: {
         ...slotConfig.agents?.defaults,
-        memorySearch: {
-          ...currentMemorySearch,
-          ...(input.sources ? { sources: input.sources } : {}),
-          roots: input.roots && input.roots.length > 0 ? input.roots : [input.workspaceDir],
-          ...(input.extraPaths ? { extraPaths: input.extraPaths } : {}),
-          query: {
-            ...currentMemorySearch?.query,
-            scope: input.scope || "prefer_session",
-          },
-        },
+        memorySearch: nextMemorySearch,
       },
     },
   };

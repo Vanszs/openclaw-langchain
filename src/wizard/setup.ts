@@ -563,7 +563,7 @@ export async function runSetupWizard(
   }
 
   const configureMemory = await prompter.confirm({
-    message: "Configure memory / RAG now?",
+    message: "Configure memory now (built-in OpenClaw or LangChain + Chroma)?",
     initialValue: flow === "advanced",
   });
   if (configureMemory) {
