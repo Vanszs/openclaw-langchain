@@ -90,6 +90,12 @@ IDENTITY.md
 USER.md
 .tgz
 .idea
+/auth-profiles.json
+/auth.json
+/oauth.json
+/openclaw.json
+/clawdbot.json
+/.openclaw-workspace-image-*/
 
 # local tooling
 .serena/

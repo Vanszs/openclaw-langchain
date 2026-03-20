@@ -99,6 +99,18 @@ for file in "${files[@]}"; do
   esac
 done
 
+# Block common local runtime/auth artifacts that may contain secrets.
+for file in "${files[@]}"; do
+  normalized=${file#./}
+  case "$normalized" in
+    auth-profiles.json | auth.json | oauth.json | openclaw.json | clawdbot.json | \
+      .openclaw-workspace-image-* | .openclaw-workspace-image-*/*)
+      printf 'Error: refusing to stage sensitive local runtime file: %s\n' "$file" >&2
+      exit 1
+      ;;
+  esac
+done
+
 last_commit_error=''
 
 run_git_command() {
