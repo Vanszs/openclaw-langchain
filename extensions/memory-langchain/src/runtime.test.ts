@@ -4,6 +4,14 @@ import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+function createDeferred() {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
+}
+
 const resolveLangchainPluginConfigMock = vi.hoisted(() => vi.fn());
 const managerSyncMock = vi.hoisted(() => vi.fn(async () => {}));
 const managerCtorMock = vi.hoisted(() =>
@@ -280,5 +288,85 @@ describe("LangchainMemoryRuntime", () => {
       undefined,
     );
     expect(managerSyncMock).toHaveBeenCalledWith({ reason: "service" });
+  });
+
+  it("serializes overlapping drainAndSync runs", async () => {
+    const runtime = createLangchainMemoryRuntime();
+    const releaseFirst = createDeferred();
+    let activeSyncs = 0;
+    let maxConcurrentSyncs = 0;
+
+    managerSyncMock
+      .mockImplementationOnce(async () => {
+        activeSyncs += 1;
+        maxConcurrentSyncs = Math.max(maxConcurrentSyncs, activeSyncs);
+        await releaseFirst.promise;
+        activeSyncs -= 1;
+      })
+      .mockImplementation(async () => {
+        activeSyncs += 1;
+        maxConcurrentSyncs = Math.max(maxConcurrentSyncs, activeSyncs);
+        await Promise.resolve();
+        activeSyncs -= 1;
+      });
+
+    const first = runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+    const second = runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+    await Promise.resolve();
+    releaseFirst.resolve();
+
+    await Promise.all([first, second]);
+
+    expect(maxConcurrentSyncs).toBe(1);
+    expect(managerSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for in-flight drain before stop returns", async () => {
+    const runtime = createLangchainMemoryRuntime();
+    const releaseSync = createDeferred();
+    managerSyncMock.mockImplementationOnce(async () => {
+      await releaseSync.promise;
+    });
+
+    const drainPromise = runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+    await Promise.resolve();
+
+    let stopped = false;
+    const stopPromise = runtime.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseSync.resolve();
+    await Promise.all([drainPromise, stopPromise]);
+    expect(stopped).toBe(true);
+  });
+
+  it("retries malformed queue files and dead-letters after max retries", async () => {
+    const runtime = createLangchainMemoryRuntime();
+    const pendingDir = path.join(pluginDir, "queue", "pending");
+    const failedDir = path.join(pluginDir, "queue", "failed");
+    const badPath = path.join(pendingDir, "main-bad.json");
+    await fs.mkdir(pendingDir, { recursive: true });
+    await fs.writeFile(badPath, "{ invalid json", "utf-8");
+
+    for (let index = 0; index < 3; index += 1) {
+      await runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+    }
+
+    const pendingFiles = await fs.readdir(pendingDir);
+    expect(pendingFiles).toEqual([]);
+    const failedFiles = await fs.readdir(failedDir);
+    expect(failedFiles.length).toBe(1);
+    expect(failedFiles[0]).toContain("main-bad");
+
+    const logs = await fs.readFile(path.join(pluginDir, "events.jsonl"), "utf-8");
+    const lines = logs.trim().split("\n").filter(Boolean);
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    const first = JSON.parse(lines[0]!) as { type: string; attempt: number };
+    const last = JSON.parse(lines.at(-1)!) as { type: string; attempt: number };
+    expect(first.type).toBe("queue_item_failure");
+    expect(last.attempt).toBe(3);
   });
 });

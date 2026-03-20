@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => ({
   pluginConfig: null as Record<string, unknown> | null,
   agentConfig: null as Record<string, unknown> | null,
   sessionMessagesByFile: new Map<string, unknown[]>(),
+  embeddingsConfigs: [] as Array<Record<string, unknown>>,
   collections: new Map<
     string,
     Map<string, { pageContent: string; metadata: Record<string, unknown> }>
@@ -60,7 +61,9 @@ vi.mock("@langchain/core/documents", () => ({
 
 vi.mock("@langchain/openai", () => ({
   OpenAIEmbeddings: class OpenAIEmbeddings {
-    constructor(_params: unknown) {}
+    constructor(params: unknown) {
+      testState.embeddingsConfigs.push((params ?? {}) as Record<string, unknown>);
+    }
   },
 }));
 
@@ -162,6 +165,7 @@ describe("LangchainMemoryManager", () => {
     vi.clearAllMocks();
     testState.collections.clear();
     testState.sessionMessagesByFile.clear();
+    testState.embeddingsConfigs.length = 0;
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "memory-langchain-manager-"));
     workspaceDir = path.join(tempDir, "workspace");
     pluginDir = path.join(tempDir, "plugin");
@@ -261,6 +265,86 @@ describe("LangchainMemoryManager", () => {
     expect(collection?.size).toBe(firstStatus.chunks);
   });
 
+  it("writes failure status when sync fails before indexing", async () => {
+    testState.pluginConfig = {
+      ...testState.pluginConfig,
+      embeddingProvider: "gemini",
+    };
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    await expect(manager.sync({ reason: "service" })).rejects.toThrow(
+      /embeddingProvider in \[openai, openrouter\]/i,
+    );
+    const status = JSON.parse(await fs.readFile(path.join(pluginDir, "status.json"), "utf-8")) as {
+      pluginId: string;
+      agentId: string;
+      backendReachable: boolean;
+      backendError?: string;
+      lastError?: string;
+      queueDepth: number;
+    };
+    expect(status.pluginId).toBe("memory-langchain");
+    expect(status.agentId).toBe("main");
+    expect(status.backendReachable).toBe(false);
+    expect(status.backendError).toContain("embeddingProvider in [openai, openrouter]");
+    expect(status.lastError).toContain("embeddingProvider in [openai, openrouter]");
+    expect(typeof status.queueDepth).toBe("number");
+  });
+
+  it("clears stale lastError after a successful sync", async () => {
+    testState.pluginConfig = {
+      ...testState.pluginConfig,
+      embeddingProvider: "gemini",
+    };
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    await expect(manager.sync({ reason: "service" })).rejects.toThrow(
+      /embeddingProvider in \[openai, openrouter\]/i,
+    );
+
+    testState.pluginConfig = {
+      ...testState.pluginConfig,
+      embeddingProvider: "openai",
+    };
+    await fs.writeFile(path.join(workspaceDir, "README.md"), "# Recovery\nsync ok\n", "utf-8");
+    await manager.sync({ reason: "service" });
+
+    const status = JSON.parse(await fs.readFile(path.join(pluginDir, "status.json"), "utf-8")) as {
+      lastError?: string;
+    };
+    expect(status.lastError).toBeUndefined();
+  });
+
+  it("uses OpenRouter-compatible embedding client configuration", async () => {
+    testState.pluginConfig = {
+      ...testState.pluginConfig,
+      embeddingProvider: "openrouter",
+    };
+    await fs.writeFile(path.join(workspaceDir, "README.md"), "# OpenRouter\nembed this\n", "utf-8");
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    await manager.sync({ reason: "service" });
+
+    const embeddingConfig = testState.embeddingsConfigs[0] ?? {};
+    const configuration = (embeddingConfig.configuration ?? {}) as {
+      baseURL?: string;
+      defaultHeaders?: Record<string, string>;
+    };
+    expect(configuration.baseURL).toBe("https://openrouter.ai/api/v1");
+    expect(configuration.defaultHeaders).toMatchObject({
+      "HTTP-Referer": "https://openclaw.ai",
+      "X-Title": "OpenClaw",
+    });
+  });
+
+  it("reports failed queue depth in provider status", async () => {
+    const failedDir = path.join(pluginDir, "queue", "failed");
+    await fs.mkdir(failedDir, { recursive: true });
+    await fs.writeFile(path.join(failedDir, "failed-1.json"), "{}", "utf-8");
+    await fs.writeFile(path.join(failedDir, "failed-2.json"), "{}", "utf-8");
+
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    const status = manager.status();
+    expect(status.custom?.failedQueueDepth).toBe(2);
+  });
+
   it("prefers session-scoped retrieval and sanitizes snippets", async () => {
     testState.agentConfig = {
       ...testState.agentConfig,
@@ -350,6 +434,43 @@ describe("LangchainMemoryManager", () => {
       relPath: "langchain/sessions-transcripts/sess-fallback.jsonl",
     });
     expect(read.text).toContain("fallback transcript deploy plan");
+  });
+
+  it("warns with backendError when search has no results", async () => {
+    const statusPath = path.join(pluginDir, "status.json");
+    await fs.writeFile(
+      statusPath,
+      JSON.stringify(
+        {
+          version: 1,
+          pluginId: "memory-langchain",
+          agentId: "main",
+          updatedAt: Date.now(),
+          backendReachable: false,
+          backendError: "chroma unavailable",
+          queueDepth: 0,
+          files: 0,
+          chunks: 0,
+          sources: ["chat", "sessions"],
+          extraPaths: [],
+          roots: [workspaceDir],
+          workspaceDir,
+          chromaUrl: "http://127.0.0.1:8000",
+          collectionName: "openclaw-main",
+          sourceCounts: [],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const warn = vi.fn();
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir, {
+      warn,
+    } as never);
+    const results = await manager.search("no match", { maxResults: 3 });
+    expect(results).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("chroma unavailable"));
   });
 
   it("accepts the shared OpenClaw search(query, opts) contract", async () => {

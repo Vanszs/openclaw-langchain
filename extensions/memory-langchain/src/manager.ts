@@ -173,6 +173,11 @@ const TEXT_FILE_EXTENSIONS = new Set([
 
 const DOC_EXTENSIONS = new Set([".md", ".mdx", ".rst", ".txt", ".html"]);
 const SESSION_TRANSCRIPT_FALLBACK_DIR = "sessions-transcripts";
+const OPENROUTER_EMBEDDINGS_BASE_URL = "https://openrouter.ai/api/v1";
+const OPENROUTER_DEFAULT_HEADERS = {
+  "HTTP-Referer": "https://openclaw.ai",
+  "X-Title": "OpenClaw",
+} as const;
 const IGNORED_DIRS = new Set([
   ".git",
   ".next",
@@ -212,6 +217,10 @@ function normalizeScore(value: number): number {
   return 1 / (1 + Math.max(0, value));
 }
 
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function sanitizeSnippet(text: string): string {
   return text
     .replace(/<\s*\/?(system|assistant|developer|tool|function|relevant-memories)\b/gi, "[tag]")
@@ -242,6 +251,15 @@ async function writeJsonFile(pathname: string, value: unknown): Promise<void> {
 function readPendingQueueDepth(dir: string): number {
   try {
     return fsSync.readdirSync(dir).filter((entry) => entry.endsWith(".json")).length;
+  } catch {
+    return 0;
+  }
+}
+
+function readFailedQueueDepth(queueDir: string): number {
+  try {
+    const failedDir = path.join(queueDir, "failed");
+    return fsSync.readdirSync(failedDir).filter((entry) => entry.endsWith(".json")).length;
   } catch {
     return 0;
   }
@@ -939,18 +957,26 @@ export class LangchainMemoryManager implements MemorySearchManager {
   }
 
   private async createEmbeddings(plugin: LangchainPluginConfig) {
-    if (plugin.embeddingProvider !== "openai") {
+    if (plugin.embeddingProvider !== "openai" && plugin.embeddingProvider !== "openrouter") {
       throw new Error(
-        `memory-langchain only supports embeddingProvider=openai for now (received ${plugin.embeddingProvider})`,
+        `memory-langchain only supports embeddingProvider in [openai, openrouter] (received ${plugin.embeddingProvider})`,
       );
     }
     if (!plugin.apiKey) {
       throw new Error(plugin.apiKeyUnresolvedReason ?? "embedding API key missing");
     }
+    const configuration =
+      plugin.embeddingProvider === "openrouter"
+        ? {
+            baseURL: OPENROUTER_EMBEDDINGS_BASE_URL,
+            defaultHeaders: OPENROUTER_DEFAULT_HEADERS,
+          }
+        : undefined;
     return new OpenAIEmbeddings({
       apiKey: plugin.apiKey,
       model: plugin.embeddingModel,
       batchSize: plugin.batchSize,
+      ...(configuration ? { configuration } : {}),
     });
   }
 
@@ -985,6 +1011,41 @@ export class LangchainMemoryManager implements MemorySearchManager {
     }
   }
 
+  private async writeFailureStatus(params: {
+    plugin: LangchainPluginConfig;
+    agent: LangchainAgentConfig;
+    error: unknown;
+  }) {
+    const statusFile = this.readStatusFile(params.plugin, params.agent);
+    const queueDepth = readPendingQueueDepth(params.plugin.pendingDir);
+    const lastError = stringifyError(params.error);
+    await writeJsonFile(params.plugin.statusPath, {
+      version: 1,
+      pluginId: "memory-langchain",
+      agentId: params.agent.agentId,
+      updatedAt: Date.now(),
+      backendReachable: false,
+      backendError: lastError,
+      lastError,
+      lastSyncAt: statusFile?.lastSyncAt,
+      queueDepth,
+      files: statusFile?.files ?? 0,
+      chunks: statusFile?.chunks ?? 0,
+      sources: params.agent.sources,
+      extraPaths: params.agent.extraPaths,
+      roots: params.agent.roots,
+      workspaceDir: params.agent.workspaceDir,
+      chromaUrl: params.plugin.chromaUrl,
+      collectionName:
+        statusFile?.collectionName ??
+        resolveLangchainCollectionName({
+          collectionPrefix: params.plugin.collectionPrefix,
+          agentId: params.agent.agentId,
+        }),
+      sourceCounts: statusFile?.sourceCounts ?? [],
+    } satisfies LangchainStatusFile);
+  }
+
   status(): MemoryProviderStatus {
     const plugin = resolveLangchainPluginStorageState({
       cfg: this.cfg,
@@ -1003,6 +1064,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
         agentId: agent.agentId,
       });
     const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
+    const failedQueueDepth = readFailedQueueDepth(plugin.queueDir);
     const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
     const staleIndex =
       typeof statusFile?.lastSyncAt === "number"
@@ -1031,6 +1093,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
         chromaUrl: plugin.chromaUrl,
         collectionName,
         queueDepth,
+        failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
         lastError: statusFile?.lastError,
         backendError: statusFile?.backendError,
@@ -1044,11 +1107,13 @@ export class LangchainMemoryManager implements MemorySearchManager {
   async buildStatus(): Promise<MemoryProviderStatus> {
     const { plugin, agent } = await this.resolveRuntime();
     const statusFile = this.readStatusFile(plugin, agent);
+    const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
+    const failedQueueDepth = readFailedQueueDepth(plugin.queueDir);
     const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
     const staleIndex =
       typeof statusFile?.lastSyncAt === "number"
         ? Date.now() - statusFile.lastSyncAt > staleThresholdMs
-        : (statusFile?.queueDepth ?? 0) > 0;
+        : queueDepth > 0;
     return {
       backend: "plugin",
       provider: "langchain",
@@ -1056,7 +1121,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
       requestedProvider: plugin.embeddingProvider,
       files: statusFile?.files ?? 0,
       chunks: statusFile?.chunks ?? 0,
-      dirty: (statusFile?.queueDepth ?? 0) > 0,
+      dirty: queueDepth > 0,
       workspaceDir: agent.workspaceDir,
       dbPath: plugin.chromaUrl,
       extraPaths: agent.extraPaths,
@@ -1075,7 +1140,8 @@ export class LangchainMemoryManager implements MemorySearchManager {
             collectionPrefix: plugin.collectionPrefix,
             agentId: agent.agentId,
           }),
-        queueDepth: statusFile?.queueDepth ?? 0,
+        queueDepth,
+        failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
         lastError: statusFile?.lastError,
         backendError: statusFile?.backendError,
@@ -1115,121 +1181,132 @@ export class LangchainMemoryManager implements MemorySearchManager {
     progress?: (update: MemorySyncProgressUpdate) => void;
   }): Promise<void> {
     const { plugin, agent } = await this.resolveRuntime();
-    ensureDirSync(plugin.documentsDir);
-    ensureDirSync(plugin.pendingDir);
-    const { store, collectionName } = await this.getVectorStore(plugin);
-    const manifest = await readJsonFile<IndexManifest>(plugin.manifestPath, EMPTY_MANIFEST);
-    const docs = await collectDocuments({ cfg: this.cfg, plugin, agent });
-    const allChunks: ChunkedSourceDocument[] = [];
-    const nextManifest: IndexManifest = {
-      version: 1,
-      documents: {},
-    };
-    const deleteQueue: string[] = [];
-    params?.progress?.({ completed: 0, total: docs.length, label: "Scanning documents" });
+    try {
+      ensureDirSync(plugin.documentsDir);
+      ensureDirSync(plugin.pendingDir);
+      const { store, collectionName } = await this.getVectorStore(plugin);
+      const manifest = await readJsonFile<IndexManifest>(plugin.manifestPath, EMPTY_MANIFEST);
+      const docs = await collectDocuments({ cfg: this.cfg, plugin, agent });
+      const allChunks: ChunkedSourceDocument[] = [];
+      const nextManifest: IndexManifest = {
+        version: 1,
+        documents: {},
+      };
+      const deleteQueue: string[] = [];
+      params?.progress?.({ completed: 0, total: docs.length, label: "Scanning documents" });
 
-    if (params?.force) {
-      const allExistingIds = Object.values(manifest.documents).flatMap((entry) => entry.ids);
-      if (allExistingIds.length > 0) {
-        await deleteIds(store, allExistingIds);
+      if (params?.force) {
+        const allExistingIds = Object.values(manifest.documents).flatMap((entry) => entry.ids);
+        if (allExistingIds.length > 0) {
+          await deleteIds(store, allExistingIds);
+        }
       }
-    }
 
-    for (let index = 0; index < docs.length; index += 1) {
-      const doc = docs[index];
-      const manifestKey = buildManifestKey(doc.source, doc.path);
-      const previous = params?.force ? undefined : manifest.documents[manifestKey];
-      if (previous && previous.hash === doc.hash) {
-        nextManifest.documents[manifestKey] = previous;
+      for (let index = 0; index < docs.length; index += 1) {
+        const doc = docs[index];
+        const manifestKey = buildManifestKey(doc.source, doc.path);
+        const previous = params?.force ? undefined : manifest.documents[manifestKey];
+        if (previous && previous.hash === doc.hash) {
+          nextManifest.documents[manifestKey] = previous;
+          params?.progress?.({
+            completed: index + 1,
+            total: docs.length,
+            label: `Unchanged ${doc.path}`,
+          });
+          continue;
+        }
+        if (previous?.ids.length) {
+          deleteQueue.push(...previous.ids);
+        }
+        const chunked = await chunkDocument(doc, plugin);
+        allChunks.push(...chunked);
+        nextManifest.documents[manifestKey] = {
+          source: doc.source,
+          path: doc.path,
+          hash: doc.hash,
+          ids: chunked.map((chunk) => chunk.id),
+          chunks: chunked.length,
+        };
         params?.progress?.({
           completed: index + 1,
           total: docs.length,
-          label: `Unchanged ${doc.path}`,
+          label: `Indexed ${doc.path}`,
         });
-        continue;
       }
-      if (previous?.ids.length) {
-        deleteQueue.push(...previous.ids);
-      }
-      const chunked = await chunkDocument(doc, plugin);
-      allChunks.push(...chunked);
-      nextManifest.documents[manifestKey] = {
-        source: doc.source,
-        path: doc.path,
-        hash: doc.hash,
-        ids: chunked.map((chunk) => chunk.id),
-        chunks: chunked.length,
-      };
-      params?.progress?.({
-        completed: index + 1,
-        total: docs.length,
-        label: `Indexed ${doc.path}`,
-      });
-    }
 
-    if (!params?.force) {
-      for (const [manifestKey, entry] of Object.entries(manifest.documents)) {
-        if (nextManifest.documents[manifestKey]) {
-          continue;
+      if (!params?.force) {
+        for (const [manifestKey, entry] of Object.entries(manifest.documents)) {
+          if (nextManifest.documents[manifestKey]) {
+            continue;
+          }
+          deleteQueue.push(...entry.ids);
         }
-        deleteQueue.push(...entry.ids);
       }
-    }
 
-    if (deleteQueue.length > 0) {
-      await deleteIds(store, Array.from(new Set(deleteQueue)));
-    }
+      if (deleteQueue.length > 0) {
+        await deleteIds(store, Array.from(new Set(deleteQueue)));
+      }
 
-    const chunkDocs = allChunks.map(
-      (chunk) =>
-        new Document({
-          pageContent: chunk.pageContent,
-          metadata: chunk.metadata,
-        }),
-    );
-    if (chunkDocs.length > 0) {
-      await store.addDocuments(chunkDocs, {
-        ids: allChunks.map((chunk) => chunk.id),
-      });
-    }
+      const chunkDocs = allChunks.map(
+        (chunk) =>
+          new Document({
+            pageContent: chunk.pageContent,
+            metadata: chunk.metadata,
+          }),
+      );
+      if (chunkDocs.length > 0) {
+        await store.addDocuments(chunkDocs, {
+          ids: allChunks.map((chunk) => chunk.id),
+        });
+      }
 
-    const sourceCounts = countBySource(docs, allChunks);
-    const queueDepth = (await fs.readdir(plugin.pendingDir).catch(() => [])).filter((entry) =>
-      entry.endsWith(".json"),
-    ).length;
-    let backendReachable = true;
-    let backendError: string | undefined;
-    let chunks = 0;
-    try {
-      const collection = await store.ensureCollection();
-      chunks = await collection.count();
+      const sourceCounts = countBySource(docs, allChunks);
+      const queueDepth = (await fs.readdir(plugin.pendingDir).catch(() => [])).filter((entry) =>
+        entry.endsWith(".json"),
+      ).length;
+      let backendReachable = true;
+      let backendError: string | undefined;
+      let chunks = 0;
+      try {
+        const collection = await store.ensureCollection();
+        chunks = await collection.count();
+      } catch (error) {
+        backendReachable = false;
+        backendError = stringifyError(error);
+        chunks = allChunks.length;
+      }
+
+      await writeJsonFile(plugin.manifestPath, nextManifest);
+      await writeJsonFile(plugin.statusPath, {
+        version: 1,
+        pluginId: "memory-langchain",
+        agentId: agent.agentId,
+        updatedAt: Date.now(),
+        backendReachable,
+        backendError,
+        lastSyncAt: Date.now(),
+        queueDepth,
+        files: docs.length,
+        chunks,
+        sources: agent.sources,
+        extraPaths: agent.extraPaths,
+        roots: agent.roots,
+        workspaceDir: agent.workspaceDir,
+        chromaUrl: plugin.chromaUrl,
+        collectionName,
+        sourceCounts,
+        lastError: undefined,
+      } satisfies LangchainStatusFile);
     } catch (error) {
-      backendReachable = false;
-      backendError = error instanceof Error ? error.message : String(error);
-      chunks = allChunks.length;
+      try {
+        await this.writeFailureStatus({ plugin, agent, error });
+      } catch (statusError) {
+        this.logger?.warn?.(
+          `memory-langchain failed to update status snapshot: ${stringifyError(statusError)}`,
+        );
+      }
+      throw error;
     }
-
-    await writeJsonFile(plugin.manifestPath, nextManifest);
-    await writeJsonFile(plugin.statusPath, {
-      version: 1,
-      pluginId: "memory-langchain",
-      agentId: agent.agentId,
-      updatedAt: Date.now(),
-      backendReachable,
-      backendError,
-      lastSyncAt: Date.now(),
-      queueDepth,
-      files: docs.length,
-      chunks,
-      sources: agent.sources,
-      extraPaths: agent.extraPaths,
-      roots: agent.roots,
-      workspaceDir: agent.workspaceDir,
-      chromaUrl: plugin.chromaUrl,
-      collectionName,
-      sourceCounts,
-      ...(params?.reason === "service" ? {} : { lastError: undefined }),
-    } satisfies LangchainStatusFile);
   }
 
   async search(
@@ -1303,10 +1380,9 @@ export class LangchainMemoryManager implements MemorySearchManager {
       await collect();
     }
 
-    if (mapped.length === 0 && status.custom?.lastError) {
-      this.logger?.warn?.(
-        `memory-langchain search fallback warning: ${String(status.custom.lastError)}`,
-      );
+    const fallbackWarning = status.custom?.lastError ?? status.custom?.backendError;
+    if (mapped.length === 0 && fallbackWarning) {
+      this.logger?.warn?.(`memory-langchain search fallback warning: ${String(fallbackWarning)}`);
     }
 
     return mapped.slice(0, maxResults);

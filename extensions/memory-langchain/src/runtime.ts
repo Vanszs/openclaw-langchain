@@ -73,9 +73,31 @@ type SessionQueueEvent = {
 };
 
 type QueueEvent = InboundQueueEvent | SessionQueueEvent;
+const MAX_QUEUE_RETRIES = 3;
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function readQueueRetryAttempt(fileName: string): number {
+  const match = fileName.match(/\.retry-(\d+)\.json$/i);
+  if (!match) {
+    return 0;
+  }
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+
+function buildRetryPath(entry: string, nextAttempt: number): string {
+  const directory = path.dirname(entry);
+  const fileName = path.basename(entry);
+  const base = fileName.replace(/\.retry-\d+\.json$/i, ".json");
+  const stem = base.replace(/\.json$/i, "");
+  return path.join(directory, `${stem}.retry-${nextAttempt}.json`);
 }
 
 function parseAgentSessionKey(
@@ -279,6 +301,11 @@ async function appendJson(pathname: string, payload: unknown): Promise<void> {
   await fs.writeFile(pathname, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
 }
 
+async function appendLogEvent(pathname: string, payload: Record<string, unknown>): Promise<void> {
+  await fs.mkdir(path.dirname(pathname), { recursive: true });
+  await fs.appendFile(pathname, `${JSON.stringify(payload)}\n`, "utf-8");
+}
+
 function buildInboundDocBody(event: InboundQueueEvent): string {
   const lines = [
     `# ${event.source === "email" ? "Email" : "Chat"} message`,
@@ -444,6 +471,10 @@ export class LangchainMemoryRuntime {
   private interval: NodeJS.Timeout | null = null;
   private readonly touchedAgents = new Set<string>();
   private started = false;
+  private drainInFlight = false;
+  private drainRequested = false;
+  private drainPromise: Promise<void> | null = null;
+  private stopping = false;
 
   constructor(private readonly logger?: PluginLogger) {}
 
@@ -452,6 +483,7 @@ export class LangchainMemoryRuntime {
       return;
     }
     this.started = true;
+    this.stopping = false;
     const plugin = await resolveLangchainPluginConfig({
       cfg: params.cfg,
       logger: this.logger,
@@ -459,21 +491,32 @@ export class LangchainMemoryRuntime {
     await fs.mkdir(plugin.pendingDir, { recursive: true });
     await fs.mkdir(plugin.documentsDir, { recursive: true });
     this.touchedAgents.add(resolveDefaultAgentId(params.cfg));
-    void this.drainAndSync(params.cfg, params.workspaceDir);
+    this.requestDrain(params.cfg, params.workspaceDir);
     if (plugin.syncIntervalSec > 0) {
       this.interval = setInterval(() => {
-        void this.drainAndSync(params.cfg, params.workspaceDir);
+        this.requestDrain(params.cfg, params.workspaceDir);
       }, plugin.syncIntervalSec * 1000);
       this.interval.unref?.();
     }
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
     }
+    await this.drainPromise?.catch(() => {});
     this.started = false;
+  }
+
+  private requestDrain(cfg: OpenClawConfig, workspaceDir: string) {
+    if (this.stopping) {
+      return;
+    }
+    void this.drainAndSync(cfg, workspaceDir).catch((error) => {
+      this.logger?.warn?.(`memory-langchain: background drain failed: ${stringifyError(error)}`);
+    });
   }
 
   async enqueueInbound(params: {
@@ -620,7 +663,7 @@ export class LangchainMemoryRuntime {
     await appendJson(filePath, event);
   }
 
-  async drainAndSync(cfg: OpenClawConfig, workspaceDir: string): Promise<void> {
+  private async drainAndSyncOnce(cfg: OpenClawConfig, workspaceDir: string): Promise<void> {
     const plugin = await resolveLangchainPluginConfig({
       cfg,
       logger: this.logger,
@@ -646,8 +689,48 @@ export class LangchainMemoryRuntime {
         this.touchedAgents.add(payload.agentId);
         await fs.rm(entry, { force: true });
       } catch (error) {
+        const fileName = path.basename(entry);
+        const attempt = readQueueRetryAttempt(fileName) + 1;
+        const message = stringifyError(error);
+        await appendLogEvent(plugin.logsPath, {
+          type: "queue_item_failure",
+          file: fileName,
+          attempt,
+          maxRetries: MAX_QUEUE_RETRIES,
+          error: message,
+          timestamp: Date.now(),
+        }).catch(() => {});
+        if (attempt >= MAX_QUEUE_RETRIES) {
+          const failedDir = path.join(plugin.queueDir, "failed");
+          await fs.mkdir(failedDir, { recursive: true });
+          const deadLetterPath = path.join(
+            failedDir,
+            `${fileName.replace(/\.json$/i, "")}.failed-${Date.now()}.json`,
+          );
+          await fs
+            .rename(entry, deadLetterPath)
+            .catch(async () => {
+              await fs.copyFile(entry, deadLetterPath);
+              await fs.rm(entry, { force: true });
+            })
+            .catch(() => {});
+          this.logger?.warn?.(
+            `memory-langchain: queue item ${fileName} moved to failed after ${attempt} attempts: ${message}`,
+          );
+          continue;
+        }
+        const retryPath = buildRetryPath(entry, attempt);
+        if (retryPath !== entry) {
+          await fs
+            .rename(entry, retryPath)
+            .catch(async () => {
+              await fs.copyFile(entry, retryPath);
+              await fs.rm(entry, { force: true });
+            })
+            .catch(() => {});
+        }
         this.logger?.warn?.(
-          `memory-langchain: failed to process queue item ${path.basename(entry)}: ${String(error)}`,
+          `memory-langchain: failed to process queue item ${fileName} (attempt ${attempt}/${MAX_QUEUE_RETRIES}): ${message}`,
         );
       }
     }
@@ -661,8 +744,28 @@ export class LangchainMemoryRuntime {
       } catch (error) {
         this.logger?.warn?.(`memory-langchain: sync failed for ${agentId}: ${String(error)}`);
       }
+      this.touchedAgents.delete(agentId);
     }
-    this.touchedAgents.clear();
+  }
+
+  async drainAndSync(cfg: OpenClawConfig, workspaceDir: string): Promise<void> {
+    if (this.drainInFlight) {
+      this.drainRequested = true;
+      return this.drainPromise ?? Promise.resolve();
+    }
+    this.drainInFlight = true;
+    this.drainPromise = (async () => {
+      try {
+        do {
+          this.drainRequested = false;
+          await this.drainAndSyncOnce(cfg, workspaceDir);
+        } while (this.drainRequested && !this.stopping);
+      } finally {
+        this.drainInFlight = false;
+        this.drainPromise = null;
+      }
+    })();
+    return await this.drainPromise;
   }
 }
 
