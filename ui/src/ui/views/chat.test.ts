@@ -140,6 +140,7 @@ function createChatHeaderState(
     basePath: "",
     hello: null,
     agentsList: null,
+    customOrchestraEnabled: false,
     applySettings(next: AppViewState["settings"]) {
       state.settings = next;
     },
@@ -747,6 +748,47 @@ describe("chat view", () => {
     );
     expect(modelSelect).not.toBeNull();
     expect(modelSelect?.disabled).toBe(true);
+  });
+
+  it("replaces the model picker with an orchestra badge when custom orchestra is enabled", () => {
+    const { state } = createChatHeaderState();
+    state.customOrchestraEnabled = true;
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      'select[data-chat-model-select="true"]',
+    );
+    const orchestraBadge = container.querySelector<HTMLElement>(
+      '[data-chat-model-orchestra-enabled="true"]',
+    );
+
+    expect(modelSelect).toBeNull();
+    expect(orchestraBadge?.textContent?.trim()).toBe("Orchestra enabled");
+  });
+
+  it("renders file attachments as file cards instead of broken image previews", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          attachments: [
+            {
+              id: "file-1",
+              dataUrl: "data:application/pdf;base64,JVBERi0xLjQK",
+              mimeType: "application/pdf",
+              fileName: "scan.pdf",
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const fileCard = container.querySelector(".chat-attachment--file");
+    expect(fileCard).not.toBeNull();
+    expect(fileCard?.textContent).toContain("scan.pdf");
+    expect(fileCard?.querySelector("img")).toBeNull();
   });
 
   it("keeps the selected model visible when the active session is absent from sessions.list", async () => {

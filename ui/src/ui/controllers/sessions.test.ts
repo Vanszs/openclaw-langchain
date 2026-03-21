@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  loadSessions,
   deleteSession,
   deleteSessionAndRefresh,
   subscribeSessions,
@@ -125,5 +126,89 @@ describe("deleteSession", () => {
 
     expect(deleted).toBe(false);
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadSessions", () => {
+  it("clears the active session model override when custom orchestra is enabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.list") {
+        return {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: {
+            modelProvider: "openrouter",
+            model: "openai/gpt-oss-120b",
+            contextTokens: null,
+          },
+          sessions: [
+            {
+              key: "main",
+              modelProvider: "openrouter",
+              model: "openai/gpt-oss-20b",
+            },
+          ],
+        };
+      }
+      if (method === "sessions.patch") {
+        return { ok: true, key: "main" };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request, {
+      customOrchestraEnabled: true,
+      sessionKey: "main",
+      chatModelOverrides: { main: { kind: "raw", value: "openrouter/openai/gpt-oss-20b" } },
+    });
+
+    await loadSessions(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "sessions.list", {
+      includeGlobal: true,
+      includeUnknown: true,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "sessions.patch", {
+      key: "main",
+      model: null,
+    });
+    expect(state.sessionsResult?.sessions[0]?.model).toBeUndefined();
+    expect(state.sessionsResult?.sessions[0]?.modelProvider).toBeUndefined();
+    expect(state.chatModelOverrides?.main).toBeNull();
+  });
+
+  it("keeps session overrides untouched when custom orchestra is disabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.list") {
+        return {
+          ts: 0,
+          path: "",
+          count: 1,
+          defaults: {
+            modelProvider: "openrouter",
+            model: "openai/gpt-oss-120b",
+            contextTokens: null,
+          },
+          sessions: [
+            {
+              key: "main",
+              modelProvider: "openrouter",
+              model: "openai/gpt-oss-20b",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request, {
+      customOrchestraEnabled: false,
+      sessionKey: "main",
+    });
+
+    await loadSessions(state);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(state.sessionsResult?.sessions[0]?.model).toBe("openai/gpt-oss-20b");
+    expect(state.sessionsResult?.sessions[0]?.modelProvider).toBe("openrouter");
   });
 });

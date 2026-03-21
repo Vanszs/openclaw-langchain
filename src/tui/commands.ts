@@ -19,6 +19,7 @@ export type SlashCommandOptions = {
   cfg?: OpenClawConfig;
   provider?: string;
   model?: string;
+  customOrchestraEnabled?: boolean;
 };
 
 const COMMAND_ALIASES: Record<string, string> = {
@@ -65,11 +66,6 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
     { name: "agents", description: "Open agent picker" },
     { name: "session", description: "Switch session (or open picker)" },
     { name: "sessions", description: "Open session picker" },
-    {
-      name: "model",
-      description: "Set model (or open picker)",
-    },
-    { name: "models", description: "Open model picker" },
     {
       name: "think",
       description: "Set thinking level",
@@ -120,6 +116,13 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
     { name: "exit", description: "Exit the TUI" },
     { name: "quit", description: "Exit the TUI" },
   ];
+  if (!options.customOrchestraEnabled) {
+    commands.splice(6, 0, {
+      name: "model",
+      description: "Set model (or open picker)",
+    });
+    commands.splice(7, 0, { name: "models", description: "Open model picker" });
+  }
 
   const seen = new Set(commands.map((command) => command.name));
   const gatewayCommands = options.cfg ? listChatCommandsForConfig(options.cfg) : listChatCommands();
@@ -140,14 +143,13 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
 
 export function helpText(options: SlashCommandOptions = {}): string {
   const thinkLevels = formatThinkingLevels(options.provider, options.model, "|");
-  return [
+  const lines = [
     "Slash commands:",
     "/help",
     "/commands",
     "/status",
     "/agent <id> (or /agents)",
     "/session <key> (or /sessions)",
-    "/model <provider/model> (or /models)",
     `/think <${thinkLevels}>`,
     "/fast <status|on|off>",
     "/verbose <on|off>",
@@ -160,5 +162,9 @@ export function helpText(options: SlashCommandOptions = {}): string {
     "/abort",
     "/settings",
     "/exit",
-  ].join("\n");
+  ];
+  if (!options.customOrchestraEnabled) {
+    lines.splice(6, 0, "/model <provider/model> (or /models)");
+  }
+  return lines.join("\n");
 }

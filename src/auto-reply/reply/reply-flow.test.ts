@@ -769,6 +769,7 @@ afterAll(() => {
 function createRun(params: {
   prompt: string;
   messageId?: string;
+  summaryLine?: string;
   originatingChannel?: FollowupRun["originatingChannel"];
   originatingTo?: string;
   originatingAccountId?: string;
@@ -777,6 +778,7 @@ function createRun(params: {
   return {
     prompt: params.prompt,
     messageId: params.messageId,
+    summaryLine: params.summaryLine,
     enqueuedAt: Date.now(),
     originatingChannel: params.originatingChannel,
     originatingTo: params.originatingTo,
@@ -973,6 +975,99 @@ describe("followup queue deduplication", () => {
       enqueueA.resetRecentQueuedMessageIdDedupe();
       enqueueB.resetRecentQueuedMessageIdDedupe();
     }
+  });
+
+  it("preserves attachment context markers in summarize overflow prompts", async () => {
+    const key = `test-summary-attachment-context-${Date.now()}`;
+    const calls: FollowupRun[] = [];
+    const done = createDeferred<void>();
+    const runFollowup = async (run: FollowupRun) => {
+      calls.push(run);
+      done.resolve();
+    };
+    const settings: QueueSettings = {
+      mode: "followup",
+      debounceMs: 0,
+      cap: 1,
+      dropPolicy: "summarize",
+    };
+
+    expect(
+      enqueueFollowupRun(
+        key,
+        createRun({
+          prompt: "first prompt",
+          summaryLine:
+            "[attachment-context | mode=metadata-only | files=scan.pdf | ocr=unavailable] first prompt",
+        }),
+        settings,
+        "none",
+      ),
+    ).toBe(true);
+    expect(
+      enqueueFollowupRun(
+        key,
+        createRun({
+          prompt: "second prompt",
+          summaryLine: "second prompt",
+        }),
+        settings,
+        "none",
+      ),
+    ).toBe(true);
+
+    scheduleFollowupDrain(key, runFollowup);
+    await done.promise;
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.prompt).toContain("[attachment-context | mode=metadata-only | files=scan.pdf");
+  });
+
+  it("preserves attachment context markers in collect-mode summaries", async () => {
+    const key = `test-collect-attachment-context-${Date.now()}`;
+    const calls: FollowupRun[] = [];
+    const done = createDeferred<void>();
+    const runFollowup = async (run: FollowupRun) => {
+      calls.push(run);
+      done.resolve();
+    };
+    const settings: QueueSettings = {
+      mode: "collect",
+      debounceMs: 0,
+      cap: 1,
+      dropPolicy: "summarize",
+    };
+
+    expect(
+      enqueueFollowupRun(
+        key,
+        createRun({
+          prompt: "first prompt",
+          summaryLine:
+            "[attachment-context | mode=deterministic-excerpt | files=doc.pdf | retrieval=vector unavailable] first prompt",
+        }),
+        settings,
+        "none",
+      ),
+    ).toBe(true);
+    expect(
+      enqueueFollowupRun(
+        key,
+        createRun({
+          prompt: "second prompt",
+          summaryLine: "second prompt",
+        }),
+        settings,
+        "none",
+      ),
+    ).toBe(true);
+
+    scheduleFollowupDrain(key, runFollowup);
+    await done.promise;
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.prompt).toContain("[attachment-context | mode=deterministic-excerpt");
+    expect(calls[0]?.prompt).toContain("second prompt");
   });
 
   it("does not collide recent message-id keys when routing contains delimiters", async () => {

@@ -57,6 +57,7 @@ export type AppViewState = {
   assistantName: string;
   assistantAvatar: string | null;
   assistantAgentId: string | null;
+  customOrchestraEnabled: boolean;
   sessionKey: string;
   chatLoading: boolean;
   chatSending: boolean;

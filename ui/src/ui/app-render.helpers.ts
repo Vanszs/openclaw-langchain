@@ -584,6 +584,17 @@ function buildChatModelOptions(
 }
 
 function renderChatModelSelect(state: AppViewState) {
+  if (state.customOrchestraEnabled) {
+    return html`
+      <span
+        class="chat-controls__session chat-controls__model"
+        data-chat-model-orchestra-enabled="true"
+        title="Model selection is controlled by OPENCLAW_CUSTOM_ORCHESTRA_ENABLED."
+      >
+        Orchestra enabled
+      </span>
+    `;
+  }
   const currentOverride = resolveModelOverrideValue(state);
   const defaultModel = resolveDefaultModelValue(state);
   const options = buildChatModelOptions(

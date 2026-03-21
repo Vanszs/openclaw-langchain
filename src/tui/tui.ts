@@ -319,8 +319,17 @@ export function resolveCtrlCAction(params: {
   };
 }
 
+function resolveCustomOrchestraEnabled(environment: NodeJS.ProcessEnv): boolean {
+  const raw = environment.OPENCLAW_CUSTOM_ORCHESTRA_ENABLED?.trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "enabled";
+}
+
 export async function runTui(opts: TuiOptions) {
   const config = loadConfig();
+  let customOrchestraEnabled = resolveCustomOrchestraEnabled(process.env);
   const initialSessionInput = (opts.session ?? "").trim();
   let sessionScope: SessionScope = (config.session?.scope ?? "per-sender") as SessionScope;
   let sessionMainKey = normalizeMainKey(config.session?.mainKey);
@@ -450,6 +459,12 @@ export async function runTui(opts: TuiOptions) {
     set showThinking(value) {
       showThinking = value;
     },
+    get customOrchestraEnabled() {
+      return customOrchestraEnabled;
+    },
+    set customOrchestraEnabled(value) {
+      customOrchestraEnabled = value;
+    },
     get connectionStatus() {
       return connectionStatus;
     },
@@ -556,6 +571,7 @@ export async function runTui(opts: TuiOptions) {
           cfg: config,
           provider: sessionInfo.modelProvider,
           model: sessionInfo.model,
+          customOrchestraEnabled,
         }),
         process.cwd(),
       ),

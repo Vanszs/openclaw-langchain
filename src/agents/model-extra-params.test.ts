@@ -37,7 +37,7 @@ describe("resolveModelExtraParams", () => {
     });
   });
 
-  it("merges configured provider overrides over the built-in routing defaults", () => {
+  it("preserves hard-pin routing invariants while merging compatible provider overrides", () => {
     const cfg: OpenClawConfig = {
       agents: {
         defaults: {
@@ -45,8 +45,11 @@ describe("resolveModelExtraParams", () => {
             "openrouter/openai/gpt-oss-120b": {
               params: {
                 provider: {
+                  order: ["other-provider"],
                   only: ["deepinfra"],
                   allow_fallbacks: true,
+                  quantizations: ["fp8"],
+                  require_parameters: false,
                 },
                 temperature: 0.2,
               },
@@ -64,10 +67,10 @@ describe("resolveModelExtraParams", () => {
       }),
     ).toEqual({
       provider: {
-        order: ["deepinfra"],
-        quantizations: ["bf16"],
+        order: ["deepinfra", "other-provider"],
+        quantizations: ["bf16", "fp8"],
         require_parameters: true,
-        allow_fallbacks: true,
+        allow_fallbacks: false,
         only: ["deepinfra"],
       },
       temperature: 0.2,

@@ -1,4 +1,8 @@
 import { resetToolStream } from "../app-tool-stream.ts";
+import {
+  getChatAttachmentLabel,
+  isImageChatAttachmentMimeType,
+} from "../chat/attachment-support.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { formatConnectError } from "../connect-error.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
@@ -94,11 +98,11 @@ export async function loadChatHistory(state: ChatState) {
 }
 
 function dataUrlToBase64(dataUrl: string): { content: string; mimeType: string } | null {
-  const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+  const match = /^data:([^,]*);base64,(.+)$/.exec(dataUrl);
   if (!match) {
     return null;
   }
-  return { mimeType: match[1], content: match[2] };
+  return { mimeType: match[1] || "", content: match[2] };
 }
 
 type AssistantMessageNormalizationOptions = {
@@ -168,17 +172,28 @@ export async function sendChatMessage(
 
   // Build user message content blocks
   const contentBlocks: Array<{ type: string; text?: string; source?: unknown }> = [];
+  const attachmentNotes: string[] = [];
   if (msg) {
     contentBlocks.push({ type: "text", text: msg });
   }
-  // Add image previews to the message for display
+  // Keep image attachments visual in the optimistic UI, and render non-images as labels.
   if (hasAttachments) {
     for (const att of attachments) {
-      contentBlocks.push({
-        type: "image",
-        source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
-      });
+      if (isImageChatAttachmentMimeType(att.mimeType)) {
+        contentBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
+        });
+        continue;
+      }
+      attachmentNotes.push(`Attached file: ${getChatAttachmentLabel(att)}`);
     }
+  }
+  if (attachmentNotes.length > 0) {
+    contentBlocks.push({
+      type: "text",
+      text: attachmentNotes.join("\n"),
+    });
   }
 
   state.chatMessages = [
@@ -206,8 +221,9 @@ export async function sendChatMessage(
             return null;
           }
           return {
-            type: "image",
-            mimeType: parsed.mimeType,
+            type: isImageChatAttachmentMimeType(att.mimeType) ? "image" : "file",
+            mimeType: att.mimeType || parsed.mimeType || "application/octet-stream",
+            fileName: att.fileName,
             content: parsed.content,
           };
         })

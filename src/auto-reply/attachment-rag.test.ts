@@ -59,9 +59,10 @@ describe("buildAttachmentRetrievalContextNote", () => {
     runWithImageModelFallbackMock.mockImplementation(async ({ cfg, run, onError }) => {
       const primary = cfg?.agents?.defaults?.imageModel?.primary;
       const fallbacks = cfg?.agents?.defaults?.imageModel?.fallbacks ?? [];
-      const refs = [primary, ...fallbacks].filter(
-        (value): value is string => typeof value === "string" && value.includes("/"),
-      );
+      const refs = [
+        primary ?? "openrouter/qwen/qwen-2.5-vl-7b-instruct",
+        ...(fallbacks.length > 0 ? fallbacks : ["openrouter/anthropic/claude-sonnet-4-6"]),
+      ].filter((value): value is string => typeof value === "string" && value.includes("/"));
       let lastError: unknown;
       const attempts: Array<{ provider: string; model: string; error: string }> = [];
       for (const [index, ref] of refs.entries()) {
@@ -158,5 +159,134 @@ describe("buildAttachmentRetrievalContextNote", () => {
     expect(note).toContain("scan.pdf");
     expect(note).toContain("pdf-ocr");
     expect(note).toContain("invoice total 42");
+  });
+
+  it("extracts OCR text from image attachments", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "receipt.png");
+    await fs.writeFile(filePath, "png-bytes");
+
+    describeImagesWithModelMock.mockResolvedValue({ text: "receipt total 19.99", model: "qwen" });
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["image/png"],
+      },
+      cfg: undefined,
+      agentDir: "/tmp/agent",
+      query: "what is the total",
+    });
+
+    expect(describeImagesWithModelMock).toHaveBeenCalledOnce();
+    expect(note).toContain("Binary attachments are never forwarded to text models");
+    expect(note).toContain("receipt.png");
+    expect(note).toContain("image-ocr");
+    expect(note).toContain("receipt total 19.99");
+  });
+
+  it("falls back across OCR image models when the primary OCR candidate fails", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "scan.pdf");
+    await fs.writeFile(filePath, "%PDF-1.4 fake");
+
+    extractPdfContentMock.mockResolvedValue({
+      text: "",
+      images: [{ data: Buffer.from("img").toString("base64"), mimeType: "image/png" }],
+    });
+    describeImagesWithModelMock
+      .mockRejectedValueOnce(new Error("primary down"))
+      .mockResolvedValueOnce({ text: "fallback OCR text", model: "claude-sonnet" });
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["application/pdf"],
+      },
+      cfg: {
+        agents: {
+          defaults: {
+            imageModel: {
+              primary: "openrouter/qwen/qwen-2.5-vl-7b-instruct",
+              fallbacks: ["openrouter/anthropic/claude-sonnet-4-6"],
+            },
+          },
+        },
+      },
+      agentDir: "/tmp/agent",
+      query: "summarize",
+    });
+
+    expect(describeImagesWithModelMock).toHaveBeenCalledTimes(2);
+    expect(note).toContain("fallback OCR text");
+  });
+
+  it("returns a metadata-only note when OCR is unavailable for all relevant attachments", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "receipt.png");
+    await fs.writeFile(filePath, "png-bytes");
+
+    describeImagesWithModelMock.mockRejectedValue(new Error("vision unavailable"));
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["image/png"],
+      },
+      cfg: undefined,
+      agentDir: "/tmp/agent",
+      query: "what does the receipt say",
+    });
+
+    expect(note).toContain("Retrieval mode: metadata-only");
+    expect(note).toContain("Files processed: receipt.png");
+    expect(note).toContain("OCR status: unavailable for receipt.png:");
+    expect(note).toContain("No extracted text was available");
+  });
+
+  it("falls back to deterministic excerpts when vector retrieval fails", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "notes.txt");
+    await fs.writeFile(filePath, "alpha project timeline and budget");
+
+    fromDocumentsMock.mockRejectedValueOnce(new Error("vector store offline"));
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["text/plain"],
+      },
+      cfg: undefined,
+      agentDir: "/tmp/agent",
+      query: "what is the budget",
+    });
+
+    expect(note).toContain("Retrieval mode: deterministic-excerpt");
+    expect(note).toContain("Vector retrieval unavailable: vector store offline.");
+    expect(note).toContain("alpha project timeline and budget");
+  });
+
+  it("falls back to deterministic excerpts when vector retrieval returns no matches", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "notes.txt");
+    await fs.writeFile(filePath, "alpha project timeline and budget");
+
+    fromDocumentsMock.mockImplementationOnce(async () => ({
+      similaritySearchWithScore: async () => [],
+    }));
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["text/plain"],
+      },
+      cfg: undefined,
+      agentDir: "/tmp/agent",
+      query: "what is the budget",
+    });
+
+    expect(note).toContain("Retrieval mode: deterministic-excerpt");
+    expect(note).toContain("Vector retrieval returned no matches; using deterministic excerpts.");
+    expect(note).toContain("alpha project timeline and budget");
   });
 });

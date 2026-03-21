@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { estimateBase64DecodedBytes } from "../media/base64.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
 
@@ -17,6 +20,17 @@ export type ChatImageContent = {
 export type ParsedMessageWithImages = {
   message: string;
   images: ChatImageContent[];
+};
+
+export type MaterializedChatAttachment = {
+  filePath: string;
+  fileName: string;
+  mimeType?: string;
+};
+
+export type MaterializedChatAttachmentSet = {
+  directory: string;
+  files: MaterializedChatAttachment[];
 };
 
 type AttachmentLog = {
@@ -87,6 +101,75 @@ function validateAttachmentBase64OrThrow(
     );
   }
   return sizeBytes;
+}
+
+const MIME_EXTENSION_HINTS: Record<string, string> = {
+  "application/json": ".json",
+  "application/pdf": ".pdf",
+  "application/xml": ".xml",
+  "image/gif": ".gif",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "text/markdown": ".md",
+  "text/plain": ".txt",
+};
+
+function sanitizeAttachmentFileName(label: string, index: number, mime?: string): string {
+  const baseLabel = path.basename(label.trim()) || `attachment-${index + 1}`;
+  const sanitized = baseLabel.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  const fallbackBase = sanitized || `attachment-${index + 1}`;
+  if (path.extname(fallbackBase)) {
+    return fallbackBase;
+  }
+  const normalizedMime = normalizeMime(mime);
+  const hintedExtension = normalizedMime ? MIME_EXTENSION_HINTS[normalizedMime] : undefined;
+  return `${fallbackBase}${hintedExtension ?? ".bin"}`;
+}
+
+export async function materializeChatAttachments(
+  attachments: ChatAttachment[] | undefined,
+  opts?: { maxBytes?: number },
+): Promise<MaterializedChatAttachmentSet | undefined> {
+  if (!attachments || attachments.length === 0) {
+    return undefined;
+  }
+  const maxBytes = opts?.maxBytes ?? 5_000_000;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachments-"));
+  const files: MaterializedChatAttachment[] = [];
+  try {
+    for (const [index, attachment] of attachments.entries()) {
+      if (!attachment) {
+        continue;
+      }
+      const normalized = normalizeAttachment(attachment, index, {
+        stripDataUrlPrefix: true,
+        requireImageMime: false,
+      });
+      validateAttachmentBase64OrThrow(normalized, { maxBytes });
+      const fileName = sanitizeAttachmentFileName(normalized.label, index, normalized.mime);
+      const filePath = path.join(directory, fileName);
+      await fs.writeFile(filePath, Buffer.from(normalized.base64, "base64"));
+      files.push({
+        filePath,
+        fileName,
+        mimeType: normalizeMime(normalized.mime),
+      });
+    }
+    return { directory, files };
+  } catch (error) {
+    await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export async function cleanupMaterializedChatAttachments(
+  materialized: MaterializedChatAttachmentSet | undefined,
+) {
+  if (!materialized?.directory) {
+    return;
+  }
+  await fs.rm(materialized.directory, { recursive: true, force: true }).catch(() => {});
 }
 
 /**

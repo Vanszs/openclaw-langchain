@@ -33,7 +33,10 @@ import {
   isChatStopCommandText,
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
-import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
+import {
+  cleanupMaterializedChatAttachments,
+  materializeChatAttachments,
+} from "../chat-attachments.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import {
@@ -1171,16 +1174,14 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    let parsedMessage = inboundMessage;
-    let parsedImages: ChatImageContent[] = [];
+    let materializedAttachments = undefined as
+      | Awaited<ReturnType<typeof materializeChatAttachments>>
+      | undefined;
     if (normalizedAttachments.length > 0) {
       try {
-        const parsed = await parseMessageWithAttachments(inboundMessage, normalizedAttachments, {
+        materializedAttachments = await materializeChatAttachments(normalizedAttachments, {
           maxBytes: 5_000_000,
-          log: context.logGateway,
         });
-        parsedMessage = parsed.message;
-        parsedImages = parsed.images;
       } catch (err) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(err)));
         return;
@@ -1262,14 +1263,16 @@ export const chatHandlers: GatewayRequestHandlers = {
       };
       respond(true, ackPayload, undefined, { runId: clientRunId });
 
-      const trimmedMessage = parsedMessage.trim();
+      const trimmedMessage = inboundMessage.trim();
       const injectThinking = Boolean(
         p.thinking && trimmedMessage && !trimmedMessage.startsWith("/"),
       );
-      const commandBody = injectThinking ? `/think ${p.thinking} ${parsedMessage}` : parsedMessage;
+      const commandBody = injectThinking
+        ? `/think ${p.thinking} ${inboundMessage}`
+        : inboundMessage;
       const messageForAgent = systemProvenanceReceipt
-        ? [systemProvenanceReceipt, parsedMessage].filter(Boolean).join("\n\n")
-        : parsedMessage;
+        ? [systemProvenanceReceipt, inboundMessage].filter(Boolean).join("\n\n")
+        : inboundMessage;
       const clientInfo = client?.connect?.client;
       const {
         originatingChannel,
@@ -1294,7 +1297,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         Body: messageForAgent,
         BodyForAgent: stampedMessage,
         BodyForCommands: commandBody,
-        RawBody: parsedMessage,
+        RawBody: inboundMessage,
         CommandBody: commandBody,
         InputProvenance: systemInputProvenance,
         SessionKey: sessionKey,
@@ -1312,6 +1315,12 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
+        MediaPath: materializedAttachments?.files[0]?.filePath,
+        MediaType: materializedAttachments?.files[0]?.mimeType,
+        MediaUrl: materializedAttachments?.files[0]?.filePath,
+        MediaPaths: materializedAttachments?.files.map((file) => file.filePath),
+        MediaUrls: materializedAttachments?.files.map((file) => file.filePath),
+        MediaTypes: materializedAttachments?.files.map((file) => file.mimeType ?? ""),
       };
 
       const agentId = resolveSessionAgentId({
@@ -1326,7 +1335,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       const deliveredReplies: Array<{ payload: ReplyPayload; kind: "block" | "final" }> = [];
       const userTranscriptMessage = {
         role: "user" as const,
-        content: parsedMessage,
+        content: inboundMessage,
         timestamp: now,
       };
       let userTranscriptUpdateEmitted = false;
@@ -1376,7 +1385,6 @@ export const chatHandlers: GatewayRequestHandlers = {
         replyOptions: {
           runId: clientRunId,
           abortSignal: abortController.signal,
-          images: parsedImages.length > 0 ? parsedImages : undefined,
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
             emitUserTranscriptUpdate();
@@ -1510,6 +1518,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           });
         })
         .finally(() => {
+          void cleanupMaterializedChatAttachments(materializedAttachments);
           context.chatAbortControllers.delete(clientRunId);
         });
     } catch (err) {

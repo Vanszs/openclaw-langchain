@@ -315,6 +315,54 @@ describe("runWithModelFallback", () => {
     ]);
   });
 
+  it.each([
+    ["rate_limit", () => Object.assign(new Error(OPENAI_RATE_LIMIT_MESSAGE), { status: 429 })],
+    ["overloaded", () => new Error(ANTHROPIC_OVERLOADED_PAYLOAD)],
+    [
+      "timeout",
+      () =>
+        Object.assign(new Error("aborted"), {
+          name: "AbortError",
+          cause: Object.assign(new Error("request timed out"), { name: "TimeoutError" }),
+        }),
+    ],
+  ])(
+    "retries transient %s on the same candidate before succeeding without fallbacks",
+    async (_reason, createError) => {
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-4.1-mini",
+              fallbacks: [],
+            },
+          },
+        },
+      });
+      const run = vi
+        .fn()
+        .mockRejectedValueOnce(createError())
+        .mockRejectedValueOnce(createError())
+        .mockResolvedValueOnce("ok");
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        run,
+        fallbacksOverride: [],
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(run.mock.calls).toEqual([
+        ["openai", "gpt-4.1-mini"],
+        ["openai", "gpt-4.1-mini"],
+        ["openai", "gpt-4.1-mini"],
+      ]);
+    },
+  );
+
   it("falls back on auth errors", async () => {
     await expectFallsBackToHaiku({
       provider: "openai",

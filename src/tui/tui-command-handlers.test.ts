@@ -13,6 +13,7 @@ function createHarness(params?: {
   setActivityStatus?: SetActivityStatusMock;
   isConnected?: boolean;
   activeChatRunId?: string | null;
+  customOrchestraEnabled?: boolean;
 }) {
   const sendChat = params?.sendChat ?? vi.fn().mockResolvedValue({ runId: "r1" });
   const resetSession = params?.resetSession ?? vi.fn().mockResolvedValue({ ok: true });
@@ -30,6 +31,7 @@ function createHarness(params?: {
     activeChatRunId: params?.activeChatRunId ?? null,
     isConnected: params?.isConnected ?? true,
     sessionInfo: {},
+    customOrchestraEnabled: params?.customOrchestraEnabled ?? false,
   };
 
   const { handleCommand } = createCommandHandlers({
@@ -201,5 +203,23 @@ describe("tui command handlers", () => {
     expect(addUser).not.toHaveBeenCalled();
     expect(addSystem).toHaveBeenCalledWith("not connected to gateway — message not sent");
     expect(setActivityStatus).toHaveBeenLastCalledWith("disconnected");
+  });
+
+  it("locks model commands when custom orchestra is enabled", async () => {
+    const { handleCommand, addSystem } = createHarness({
+      customOrchestraEnabled: true,
+    });
+
+    await handleCommand("/model openrouter/openai/gpt-oss-20b");
+    await handleCommand("/models");
+
+    expect(addSystem).toHaveBeenNthCalledWith(
+      1,
+      "orchestra enabled — model selection is locked by OPENCLAW_CUSTOM_ORCHESTRA_ENABLED",
+    );
+    expect(addSystem).toHaveBeenNthCalledWith(
+      2,
+      "orchestra enabled — model selection is locked by OPENCLAW_CUSTOM_ORCHESTRA_ENABLED",
+    );
   });
 });

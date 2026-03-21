@@ -47,7 +47,12 @@ const TRANSIENT_RETRY_POLICY = {
   jitter: 0.2,
 } as const;
 const MAX_SAME_CANDIDATE_SESSION_RETRIES = 3;
-const SAME_CANDIDATE_RETRY_REASONS = new Set<FailoverReason>(["session_expired"]);
+const SAME_CANDIDATE_RETRY_REASONS = new Set<FailoverReason>([
+  "overloaded",
+  "rate_limit",
+  "session_expired",
+  "timeout",
+]);
 const TRANSIENT_FALLBACK_BACKOFF_REASONS = new Set<FailoverReason>([
   "timeout",
   "rate_limit",

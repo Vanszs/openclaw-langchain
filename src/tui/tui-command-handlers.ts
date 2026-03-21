@@ -78,6 +78,9 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     requestExit,
   } = context;
 
+  const orchestraLockMessage =
+    "orchestra enabled — model selection is locked by OPENCLAW_CUSTOM_ORCHESTRA_ENABLED";
+
   const setAgent = async (id: string) => {
     state.currentAgentId = normalizeAgentId(id);
     await setSession("");
@@ -107,6 +110,11 @@ export function createCommandHandlers(context: CommandHandlerContext) {
   };
 
   const openModelSelector = async () => {
+    if (state.customOrchestraEnabled) {
+      chatLog.addSystem(orchestraLockMessage);
+      tui.requestRender();
+      return;
+    }
     try {
       const models = await client.listModels();
       if (models.length === 0) {
@@ -252,6 +260,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
           helpText({
             provider: state.sessionInfo.modelProvider,
             model: state.sessionInfo.model,
+            customOrchestraEnabled: state.customOrchestraEnabled,
           }),
         );
         break;
@@ -295,6 +304,10 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         await openSessionSelector();
         break;
       case "model":
+        if (state.customOrchestraEnabled) {
+          chatLog.addSystem(orchestraLockMessage);
+          break;
+        }
         if (!args) {
           await openModelSelector();
         } else {
@@ -312,6 +325,10 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         }
         break;
       case "models":
+        if (state.customOrchestraEnabled) {
+          chatLog.addSystem(orchestraLockMessage);
+          break;
+        }
         await openModelSelector();
         break;
       case "think":

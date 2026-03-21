@@ -1,4 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  getChatAttachmentLabel,
+  isImageChatAttachmentMimeType,
+  isSupportedChatAttachmentFile,
+  isSupportedChatAttachmentMimeType,
+  resolveChatAttachmentMimeType,
+} from "../chat/attachment-support.ts";
 import { GatewayRequestError } from "../gateway.ts";
 import {
   abortChatRun,
@@ -27,6 +35,36 @@ function createState(overrides: Partial<ChatState> = {}): ChatState {
     ...overrides,
   };
 }
+
+describe("chat attachment support", () => {
+  it("accepts supported file extensions when the browser omits mime type", () => {
+    expect(isSupportedChatAttachmentFile({ name: "scan.pdf", type: "" })).toBe(true);
+    expect(isSupportedChatAttachmentFile({ name: "notes.md", type: "" })).toBe(true);
+    expect(isSupportedChatAttachmentFile({ name: "dump.bin", type: "" })).toBe(false);
+  });
+
+  it("resolves attachment mime types from file names when needed", () => {
+    expect(resolveChatAttachmentMimeType("scan.pdf", "")).toBe("application/pdf");
+    expect(resolveChatAttachmentMimeType("photo.png", "")).toBe("image/png");
+    expect(resolveChatAttachmentMimeType("unknown.bin", "")).toBe("application/octet-stream");
+  });
+
+  it("keeps image detection narrow while allowing supported text-like files", () => {
+    expect(isImageChatAttachmentMimeType("image/webp")).toBe(true);
+    expect(isImageChatAttachmentMimeType("application/pdf")).toBe(false);
+    expect(isSupportedChatAttachmentMimeType("application/pdf")).toBe(true);
+    expect(isSupportedChatAttachmentMimeType("application/zip")).toBe(false);
+  });
+
+  it("builds a picker accept string and human label for file attachments", () => {
+    expect(CHAT_ATTACHMENT_ACCEPT).toContain("image/*");
+    expect(CHAT_ATTACHMENT_ACCEPT).toContain(".pdf");
+    expect(getChatAttachmentLabel({ fileName: "scan.pdf", mimeType: "application/pdf" })).toBe(
+      "scan.pdf",
+    );
+    expect(getChatAttachmentLabel({ mimeType: "text/plain" })).toBe("text/plain");
+  });
+});
 
 describe("handleChatEvent", () => {
   it("returns null when payload is missing", () => {
@@ -570,6 +608,67 @@ describe("sendChatMessage", () => {
           text: expect.stringContaining("origin not allowed"),
         },
       ],
+    });
+  });
+
+  it("sends file attachments through chat.send without pretending they are images", async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+    });
+
+    const result = await sendChatMessage(state, "please review", [
+      {
+        id: "pdf-1",
+        dataUrl: "data:application/pdf;base64,JVBERi0xLjQK",
+        mimeType: "application/pdf",
+        fileName: "scan.pdf",
+      },
+      {
+        id: "img-1",
+        dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+        mimeType: "image/png",
+        fileName: "photo.png",
+      },
+    ]);
+
+    expect(result).not.toBeNull();
+    expect(request).toHaveBeenCalledWith("chat.send", {
+      sessionKey: "main",
+      message: "please review",
+      deliver: false,
+      idempotencyKey: expect.any(String),
+      attachments: [
+        {
+          type: "file",
+          mimeType: "application/pdf",
+          fileName: "scan.pdf",
+          content: "JVBERi0xLjQK",
+        },
+        {
+          type: "image",
+          mimeType: "image/png",
+          fileName: "photo.png",
+          content: "iVBORw0KGgo=",
+        },
+      ],
+    });
+    expect(state.chatMessages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "please review" },
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: "data:image/png;base64,iVBORw0KGgo=",
+          },
+        },
+        { type: "text", text: "Attached file: scan.pdf" },
+      ],
+      timestamp: expect.any(Number),
     });
   });
 });

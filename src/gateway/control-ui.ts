@@ -33,6 +33,7 @@ import {
 const ROOT_PREFIX = "/";
 const CONTROL_UI_ASSETS_MISSING_MESSAGE =
   "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.";
+const CUSTOM_ORCHESTRA_ENABLED_ENV_KEY = "OPENCLAW_CUSTOM_ORCHESTRA_ENABLED";
 
 export type ControlUiRequestOptions = {
   basePath?: string;
@@ -76,6 +77,14 @@ function contentTypeForExt(ext: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+function resolveCustomOrchestraEnabled(environment: NodeJS.ProcessEnv): boolean {
+  const raw = environment[CUSTOM_ORCHESTRA_ENABLED_ENV_KEY]?.trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "enabled";
 }
 
 /**
@@ -358,6 +367,7 @@ export function handleControlUiHttpRequest(
       assistantAvatar: avatarValue ?? identity.avatar,
       assistantAgentId: identity.agentId,
       serverVersion: resolveRuntimeServiceVersion(process.env),
+      customOrchestraEnabled: resolveCustomOrchestraEnabled(process.env),
     } satisfies ControlUiBootstrapConfig);
     return true;
   }

@@ -1,6 +1,9 @@
+import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildMessageWithAttachments,
+  cleanupMaterializedChatAttachments,
+  materializeChatAttachments,
   type ChatAttachment,
   parseMessageWithAttachments,
 } from "./chat-attachments.js";
@@ -176,5 +179,40 @@ describe("shared attachment validation", () => {
     } finally {
       fromSpy.mockRestore();
     }
+  });
+});
+
+describe("materializeChatAttachments", () => {
+  it("writes image and file attachments to temporary files for attachment-rag", async () => {
+    const pdf = Buffer.from("%PDF-1.4\nhello\n").toString("base64");
+    const materialized = await materializeChatAttachments([
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName: "dot.png",
+        content: PNG_1x1,
+      },
+      {
+        type: "file",
+        mimeType: "application/pdf",
+        fileName: "proof",
+        content: pdf,
+      },
+    ]);
+
+    expect(materialized?.files).toHaveLength(2);
+    expect(materialized?.files[0]?.fileName).toBe("dot.png");
+    expect(materialized?.files[1]?.fileName).toBe("proof.pdf");
+    expect(materialized?.files[0]?.mimeType).toBe("image/png");
+    expect(materialized?.files[1]?.mimeType).toBe("application/pdf");
+    await expect(fs.readFile(materialized?.files[0]?.filePath ?? "")).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await expect(fs.readFile(materialized?.files[1]?.filePath ?? "")).resolves.toBeInstanceOf(
+      Buffer,
+    );
+
+    await cleanupMaterializedChatAttachments(materialized);
+    await expect(fs.access(materialized?.directory ?? "")).rejects.toThrow();
   });
 });

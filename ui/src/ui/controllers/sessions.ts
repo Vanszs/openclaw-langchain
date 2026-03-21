@@ -12,7 +12,55 @@ export type SessionsState = {
   sessionsFilterLimit: string;
   sessionsIncludeGlobal: boolean;
   sessionsIncludeUnknown: boolean;
+  customOrchestraEnabled?: boolean;
+  sessionKey?: string;
+  chatModelOverrides?: Record<string, unknown>;
+  lastError?: string | null;
 };
+
+function hasExplicitModelOverride(entry: { model?: unknown } | undefined): boolean {
+  return typeof entry?.model === "string" && entry.model.trim().length > 0;
+}
+
+async function clearSessionModelOverrideForCustomOrchestra(
+  state: SessionsState,
+  result: SessionsListResult,
+) {
+  if (!state.customOrchestraEnabled || !state.client || !state.connected) {
+    return result;
+  }
+  const sessionKey = typeof state.sessionKey === "string" ? state.sessionKey.trim() : "";
+  if (!sessionKey) {
+    return result;
+  }
+  const currentSession = result.sessions.find((entry) => entry.key === sessionKey);
+  if (!hasExplicitModelOverride(currentSession)) {
+    return result;
+  }
+  await state.client.request("sessions.patch", {
+    key: sessionKey,
+    model: null,
+  });
+  const nextSessions = result.sessions.map((entry) =>
+    entry.key === sessionKey
+      ? {
+          ...entry,
+          model: undefined,
+          modelProvider: undefined,
+        }
+      : entry,
+  );
+  if (state.chatModelOverrides) {
+    state.chatModelOverrides = {
+      ...state.chatModelOverrides,
+      [sessionKey]: null,
+    };
+  }
+  return {
+    ...result,
+    sessions: nextSessions,
+  };
+}
 
 export async function subscribeSessions(state: SessionsState) {
   if (!state.client || !state.connected) {
@@ -59,7 +107,7 @@ export async function loadSessions(
     }
     const res = await state.client.request<SessionsListResult | undefined>("sessions.list", params);
     if (res) {
-      state.sessionsResult = res;
+      state.sessionsResult = await clearSessionModelOverrideForCustomOrchestra(state, res);
     }
   } catch (err) {
     state.sessionsError = String(err);

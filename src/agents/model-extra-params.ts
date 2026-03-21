@@ -23,7 +23,10 @@ export function resolveModelExtraParams(params: {
     return undefined;
   }
 
-  const merged = mergeModelParams(globalParams, agentParams) ?? {};
+  const merged = applyBuiltInProviderRoutingInvariants(
+    mergeModelParams(globalParams, agentParams) ?? {},
+    builtInParams,
+  );
   const resolvedParallelToolCalls = resolveAliasedParamValue(
     [builtInParams, globalParams, agentParams],
     "parallel_tool_calls",
@@ -35,6 +38,48 @@ export function resolveModelExtraParams(params: {
   }
 
   return merged;
+}
+
+function applyBuiltInProviderRoutingInvariants(
+  params: Record<string, unknown>,
+  builtInParams: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const builtInProvider = isRecord(builtInParams?.provider) ? builtInParams.provider : undefined;
+  const mergedProvider = isRecord(params.provider) ? params.provider : undefined;
+  if (!builtInProvider || !mergedProvider) {
+    return params;
+  }
+
+  const provider = {
+    ...mergedProvider,
+  };
+  const protectedOrder = mergeProtectedStringArray(builtInProvider.order, mergedProvider.order);
+  if (protectedOrder) {
+    provider.order = protectedOrder;
+  }
+  const protectedQuantizations = mergeProtectedStringArray(
+    builtInProvider.quantizations,
+    mergedProvider.quantizations,
+  );
+  if (protectedQuantizations) {
+    provider.quantizations = protectedQuantizations;
+  }
+  const protectedOnly = Array.isArray(mergedProvider.only)
+    ? mergeProtectedStringArray(builtInProvider.order, mergedProvider.only)
+    : undefined;
+  if (protectedOnly) {
+    provider.only = protectedOnly;
+  }
+  if (builtInProvider.require_parameters === true) {
+    provider.require_parameters = true;
+  }
+  if (builtInProvider.allow_fallbacks === false) {
+    provider.allow_fallbacks = false;
+  }
+  return {
+    ...params,
+    provider,
+  };
 }
 
 function mergeModelParams(
@@ -79,6 +124,26 @@ function resolveAliasedParamValue(
     seen = true;
   }
   return seen ? resolved : undefined;
+}
+
+function mergeProtectedStringArray(
+  requiredRaw: unknown,
+  overrideRaw: unknown,
+): string[] | undefined {
+  const required = Array.isArray(requiredRaw)
+    ? requiredRaw.filter(
+        (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+      )
+    : [];
+  const override = Array.isArray(overrideRaw)
+    ? overrideRaw.filter(
+        (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+      )
+    : [];
+  if (required.length === 0 && override.length === 0) {
+    return undefined;
+  }
+  return [...new Set([...required, ...override])];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

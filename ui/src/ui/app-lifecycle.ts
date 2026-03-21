@@ -29,6 +29,7 @@ type LifecycleHost = {
   assistantAvatar: string | null;
   assistantAgentId: string | null;
   serverVersion: string | null;
+  customOrchestraEnabled: boolean;
   chatHasAutoScrolled: boolean;
   chatManualRefreshInFlight: boolean;
   chatLoading: boolean;

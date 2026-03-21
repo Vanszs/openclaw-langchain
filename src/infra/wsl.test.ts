@@ -29,12 +29,19 @@ function setPlatform(platform: NodeJS.Platform): void {
   });
 }
 
+function clearWSLEnv(): void {
+  delete process.env.WSL_INTEROP;
+  delete process.env.WSL_DISTRO_NAME;
+  delete process.env.WSLENV;
+}
+
 describe("wsl detection", () => {
   let envSnapshot: ReturnType<typeof captureEnv>;
 
   beforeEach(() => {
     vi.resetModules();
     envSnapshot = captureEnv(["WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV"]);
+    clearWSLEnv();
     readFileSyncMock.mockReset();
     readFileMock.mockReset();
     setPlatform("linux");
