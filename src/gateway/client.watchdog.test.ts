@@ -159,6 +159,66 @@ describe("GatewayClient", () => {
     }
   });
 
+  test.each(["accepted", "started"] as const)(
+    "keeps waiting for final responses after %s ack when expectFinal is enabled",
+    async (status) => {
+      const client = new GatewayClient({
+        requestTimeoutMs: 25,
+      });
+      const send = vi.fn();
+      (
+        client as unknown as {
+          ws: WebSocket | { readyState: number; send: () => void; close: () => void };
+        }
+      ).ws = {
+        readyState: WebSocket.OPEN,
+        send,
+        close: vi.fn(),
+      };
+
+      const requestPromise = client.request("chat.send", undefined, { expectFinal: true });
+      const pendingMap = (client as unknown as { pending: Map<string, unknown> }).pending;
+      const requestId = [...pendingMap.keys()][0];
+      expect(requestId).toBeTruthy();
+
+      (
+        client as unknown as {
+          handleMessage: (raw: string) => void;
+        }
+      ).handleMessage(
+        JSON.stringify({
+          type: "res",
+          id: requestId,
+          ok: true,
+          payload: { runId: "run-1", status },
+        }),
+      );
+
+      expect(pendingMap.size).toBe(1);
+
+      (
+        client as unknown as {
+          handleMessage: (raw: string) => void;
+        }
+      ).handleMessage(
+        JSON.stringify({
+          type: "res",
+          id: requestId,
+          ok: true,
+          payload: { runId: "run-1", status: "ok", message: "done" },
+        }),
+      );
+
+      await expect(requestPromise).resolves.toEqual({
+        runId: "run-1",
+        status: "ok",
+        message: "done",
+      });
+      expect(pendingMap.size).toBe(0);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("clamps oversized explicit request timeouts before scheduling", async () => {
     vi.useFakeTimers();
     try {

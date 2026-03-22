@@ -37,6 +37,12 @@ const PDF_MIN_TEXT_CHARS = 200;
 const PDF_MAX_PAGES = 20;
 const PDF_MAX_PIXELS = 4_000_000;
 const OCR_TIMEOUT_MS = 30_000;
+const OCR_TRANSCRIPTION_INSTRUCTIONS =
+  "Act as an OCR engine. Return only the transcribed visible text. " +
+  "Do not describe the image, layout, colors, font, or quality. " +
+  "Do not add bullet points, explanations, or markdown fencing. " +
+  "Preserve important numbers, labels, and short line breaks when helpful. " +
+  "If no readable text is visible, return an empty string.";
 const IMAGE_MIME_FALLBACKS: Record<string, string> = {
   ".bmp": "image/bmp",
   ".gif": "image/gif",
@@ -187,6 +193,101 @@ function coerceExtractedText(text: string): string {
   return text.split("\u0000").join("").replace(/\r\n/g, "\n").trim();
 }
 
+function isLikelyOcrCaptionWrapper(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("the image displays") ||
+    normalized.includes("the image contains") ||
+    normalized.includes("the image shows") ||
+    normalized.includes("the visible text in the image is") ||
+    normalized.includes("here are the key features") ||
+    normalized.includes("the purpose of this image") ||
+    normalized.includes("color scheme") ||
+    normalized.includes("overall, the image") ||
+    normalized.includes("the text is centered")
+  );
+}
+
+function extractQuotedCaptionText(text: string): string | null {
+  const quotedMatch = text.match(
+    /(?:displays|contains|shows|reads?)\s+the text\s+["“]([^"”\n]+)["”]/i,
+  );
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1].trim();
+  }
+  const labeledMatch = text.match(
+    /(?:visible\s+)?text(?:\s+in\s+the\s+image)?(?:\s+is)?\s*[:-]\s*["“]?([^"\n”]+)["”]?/i,
+  );
+  if (labeledMatch?.[1]) {
+    return labeledMatch[1].trim();
+  }
+  return null;
+}
+
+function coerceOcrExtractedText(text: string): string {
+  const normalized = coerceExtractedText(text);
+  if (!normalized) {
+    return "";
+  }
+  const quotedText = extractQuotedCaptionText(normalized);
+  if (quotedText && isLikelyOcrCaptionWrapper(normalized)) {
+    return quotedText;
+  }
+  return normalized;
+}
+
+function scoreOcrExtractedText(params: { rawText: string; extractedText: string }): number {
+  const tokens = params.extractedText.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const wordTokenCount = tokens.filter((token) => /^[A-Za-z]{3,}$/.test(token)).length;
+  const numberLikeTokenCount = tokens.filter((token) => /\d/.test(token)).length;
+  const strongAlphaNumericTokenCount = tokens.filter((token) =>
+    /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9-]{4,}$/.test(token),
+  ).length;
+  const singleDigitCount = tokens.filter((token) => /^\d$/.test(token)).length;
+  const lengthScore = Math.min(params.extractedText.length / 32, 3);
+  const captionPenalty = isLikelyOcrCaptionWrapper(params.rawText) ? 6 : 0;
+  return (
+    wordTokenCount +
+    numberLikeTokenCount * 2 +
+    strongAlphaNumericTokenCount * 5 +
+    lengthScore -
+    singleDigitCount * 2 -
+    captionPenalty
+  );
+}
+
+function shouldRetryOcrWithFallbackCandidate(params: {
+  rawText: string;
+  extractedText: string;
+}): boolean {
+  if (isLikelyOcrCaptionWrapper(params.rawText)) {
+    return true;
+  }
+  if (scoreOcrExtractedText(params) < 4.5) {
+    return true;
+  }
+  const tokens = params.extractedText.split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) {
+    return false;
+  }
+  const singleDigitCount = tokens.filter((token) => /^\d$/.test(token)).length;
+  const strongAlphaNumericTokenCount = tokens.filter((token) =>
+    /^[A-Z0-9]{4,}$/.test(token),
+  ).length;
+  return singleDigitCount >= 2 && strongAlphaNumericTokenCount === 0;
+}
+
+function summarizeOcrPreview(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= 120) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, 117)}...`;
+}
+
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
     return text;
@@ -326,6 +427,15 @@ async function runAttachmentOcrExtraction(params: {
   }
 
   const ocrFailures: string[] = [];
+  let ocrAttemptIndex = 0;
+  let bestOcrCandidate:
+    | {
+        text: string;
+        score: number;
+        resolvedProvider: string;
+        resolvedModel: string;
+      }
+    | undefined;
   const ocrCfg: OpenClawConfig = {
     ...params.cfg,
     agents: {
@@ -348,6 +458,7 @@ async function runAttachmentOcrExtraction(params: {
     const fallbackRun = await runWithImageModelFallback({
       cfg: ocrCfg,
       run: async (provider, model) => {
+        ocrAttemptIndex += 1;
         const ocrResult = await describeImagesWithModel({
           cfg: ocrCfg,
           agentDir: params.agentDir,
@@ -358,14 +469,42 @@ async function runAttachmentOcrExtraction(params: {
           maxTokens: 4096,
           timeoutMs: OCR_TIMEOUT_MS,
         });
-        const ocrText = coerceExtractedText(ocrResult.text);
+        const ocrText = coerceOcrExtractedText(ocrResult.text);
         if (!ocrText) {
           throw new Error("OCR returned empty text");
         }
+        const score = scoreOcrExtractedText({
+          rawText: ocrResult.text,
+          extractedText: ocrText,
+        });
+        if (!bestOcrCandidate || score > bestOcrCandidate.score) {
+          bestOcrCandidate = {
+            text: ocrText,
+            score,
+            resolvedProvider: provider,
+            resolvedModel: model,
+          };
+        }
+        logVerbose(
+          `attachment-rag: OCR ${provider}/${model} score=${score.toFixed(2)} for ${params.candidate.fileName}: ${summarizeOcrPreview(ocrText)}`,
+        );
+        if (
+          ocrAttemptIndex < imageModels.length &&
+          shouldRetryOcrWithFallbackCandidate({
+            rawText: ocrResult.text,
+            extractedText: ocrText,
+          })
+        ) {
+          throw new Error("OCR output low confidence; trying next image model");
+        }
+        const selected = bestOcrCandidate;
+        if (!selected) {
+          throw new Error("OCR returned no usable text");
+        }
         return {
-          text: ocrText,
-          resolvedProvider: provider,
-          resolvedModel: model,
+          text: selected.text,
+          resolvedProvider: selected.resolvedProvider,
+          resolvedModel: selected.resolvedModel,
         };
       },
       onError: ({ provider, model, error }) => {
@@ -373,7 +512,7 @@ async function runAttachmentOcrExtraction(params: {
       },
     });
     if (fallbackRun.attempts.length > 0) {
-      const usedRef = `${fallbackRun.provider}/${fallbackRun.model}`;
+      const usedRef = `${fallbackRun.result.resolvedProvider}/${fallbackRun.result.resolvedModel}`;
       logVerbose(
         `attachment-rag: OCR fallback selected ${usedRef} for ${params.candidate.fileName}`,
       );
@@ -439,8 +578,7 @@ async function extractPdfAttachmentText(params: {
       fileName: `${params.candidate.fileName}-page-${index + 1}.png`,
       mime: image.mimeType || "image/png",
     })),
-    prompt:
-      "Perform OCR on these PDF pages. Extract visible text faithfully and preserve important numbers, labels, tables, and short structural cues. Return plain text only.",
+    prompt: `Perform OCR on these PDF pages. ${OCR_TRANSCRIPTION_INSTRUCTIONS}`,
     source: "pdf-ocr",
   });
 }
@@ -524,8 +662,7 @@ async function extractAttachmentText(params: {
           mime: resolveImageMimeType(params.candidate),
         },
       ],
-      prompt:
-        "Perform OCR on this image. Extract visible text faithfully and preserve important numbers, labels, tables, and short structural cues. Return plain text only.",
+      prompt: `Perform OCR on this image. ${OCR_TRANSCRIPTION_INSTRUCTIONS}`,
       source: "image-ocr",
     });
   }

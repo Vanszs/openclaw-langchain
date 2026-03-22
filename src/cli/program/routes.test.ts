@@ -63,6 +63,11 @@ describe("program routes", () => {
     expect(route?.loadPlugins).toBeUndefined();
   });
 
+  it("matches memory status route and always preloads plugins", () => {
+    const route = expectRoute(["memory", "status"]);
+    expect(route?.loadPlugins).toBe(true);
+  });
+
   it("returns false for gateway status route when option values are missing", async () => {
     await expectRunFalse(["gateway", "status"], ["node", "openclaw", "gateway", "status", "--url"]);
     await expectRunFalse(

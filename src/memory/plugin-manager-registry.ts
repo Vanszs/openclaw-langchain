@@ -12,7 +12,15 @@ export type MemoryManagerProvider = (
   ctx: MemoryManagerProviderContext,
 ) => MemorySearchManager | null | Promise<MemorySearchManager | null>;
 
-const MEMORY_MANAGER_PROVIDERS = new Map<string, MemoryManagerProvider>();
+const MEMORY_MANAGER_PROVIDERS_KEY = Symbol.for("openclaw.memoryManagerProviders");
+
+function getMemoryManagerProvidersStore(): Map<string, MemoryManagerProvider> {
+  const globalState = globalThis as typeof globalThis & {
+    [MEMORY_MANAGER_PROVIDERS_KEY]?: Map<string, MemoryManagerProvider>;
+  };
+  globalState[MEMORY_MANAGER_PROVIDERS_KEY] ??= new Map<string, MemoryManagerProvider>();
+  return globalState[MEMORY_MANAGER_PROVIDERS_KEY];
+}
 
 export function registerMemoryManagerProvider(
   pluginId: string,
@@ -22,7 +30,7 @@ export function registerMemoryManagerProvider(
   if (!normalizedId) {
     throw new Error("memory manager provider requires a plugin id");
   }
-  MEMORY_MANAGER_PROVIDERS.set(normalizedId, provider);
+  getMemoryManagerProvidersStore().set(normalizedId, provider);
 }
 
 export function getMemoryManagerProvider(pluginId: string): MemoryManagerProvider | null {
@@ -30,9 +38,9 @@ export function getMemoryManagerProvider(pluginId: string): MemoryManagerProvide
   if (!normalizedId) {
     return null;
   }
-  return MEMORY_MANAGER_PROVIDERS.get(normalizedId) ?? null;
+  return getMemoryManagerProvidersStore().get(normalizedId) ?? null;
 }
 
 export function clearMemoryManagerProvidersForTests(): void {
-  MEMORY_MANAGER_PROVIDERS.clear();
+  getMemoryManagerProvidersStore().clear();
 }

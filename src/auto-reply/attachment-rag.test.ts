@@ -183,6 +183,37 @@ describe("buildAttachmentRetrievalContextNote", () => {
     expect(note).toContain("receipt.png");
     expect(note).toContain("image-ocr");
     expect(note).toContain("receipt total 19.99");
+    expect(describeImagesWithModelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining("Act as an OCR engine."),
+      }),
+    );
+  });
+
+  it("salvages quoted OCR text from descriptive vision captions", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "receipt.png");
+    await fs.writeFile(filePath, "png-bytes");
+
+    describeImagesWithModelMock.mockResolvedValue({
+      text:
+        'The image displays the text "CAT CODE ZX9Q7M TOTAL 481". ' +
+        "Here are the key features: the text is centered and the background is white.",
+      model: "qwen",
+    });
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["image/png"],
+      },
+      cfg: undefined,
+      agentDir: "/tmp/agent",
+      query: "what does the image say",
+    });
+
+    expect(note).toContain("CAT CODE ZX9Q7M TOTAL 481");
+    expect(note).not.toContain("Here are the key features");
   });
 
   it("falls back across OCR image models when the primary OCR candidate fails", async () => {
@@ -219,6 +250,84 @@ describe("buildAttachmentRetrievalContextNote", () => {
 
     expect(describeImagesWithModelMock).toHaveBeenCalledTimes(2);
     expect(note).toContain("fallback OCR text");
+  });
+
+  it("falls back when the primary OCR output looks low confidence", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "receipt.png");
+    await fs.writeFile(filePath, "png-bytes");
+
+    describeImagesWithModelMock
+      .mockResolvedValueOnce({
+        text: "The visible text in the image is: CAT 9 7.",
+        model: "qwen",
+      })
+      .mockResolvedValueOnce({
+        text: "CAT CODE ZX9Q7M TOTAL 481",
+        model: "llama",
+      });
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["image/png"],
+      },
+      cfg: {
+        agents: {
+          defaults: {
+            imageModel: {
+              primary: "openrouter/qwen/qwen-2.5-vl-7b-instruct",
+              fallbacks: ["openrouter/meta-llama/llama-3.2-11b-vision-instruct"],
+            },
+          },
+        },
+      },
+      agentDir: "/tmp/agent",
+      query: "what does the image say",
+    });
+
+    expect(describeImagesWithModelMock).toHaveBeenCalledTimes(2);
+    expect(note).toContain("CAT CODE ZX9Q7M TOTAL 481");
+    expect(note).not.toContain("CAT 9 7");
+  });
+
+  it("keeps the strongest OCR candidate when every vision result is imperfect", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "attachment-rag-"));
+    const filePath = path.join(tempDir, "receipt.png");
+    await fs.writeFile(filePath, "png-bytes");
+
+    describeImagesWithModelMock
+      .mockResolvedValueOnce({
+        text: "CAT CODE 481",
+        model: "qwen",
+      })
+      .mockResolvedValueOnce({
+        text: "CAT 7",
+        model: "llama",
+      });
+
+    const note = await buildAttachmentRetrievalContextNote({
+      ctx: {
+        MediaPaths: [filePath],
+        MediaTypes: ["image/png"],
+      },
+      cfg: {
+        agents: {
+          defaults: {
+            imageModel: {
+              primary: "openrouter/qwen/qwen-2.5-vl-7b-instruct",
+              fallbacks: ["openrouter/meta-llama/llama-3.2-11b-vision-instruct"],
+            },
+          },
+        },
+      },
+      agentDir: "/tmp/agent",
+      query: "what does the image say",
+    });
+
+    expect(describeImagesWithModelMock).toHaveBeenCalledTimes(2);
+    expect(note).toContain("CAT CODE 481");
+    expect(note).not.toContain("CAT 7");
   });
 
   it("returns a metadata-only note when OCR is unavailable for all relevant attachments", async () => {

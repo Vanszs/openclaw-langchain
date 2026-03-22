@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const completeMock = vi.fn();
@@ -293,5 +296,85 @@ describe("describeImageWithModel", () => {
       require_parameters: true,
       quantizations: ["bf16"],
     });
+  });
+
+  it("falls back to models.json provider metadata for configured OpenRouter image models", async () => {
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-runtime-"));
+    await fs.writeFile(
+      path.join(agentDir, "models.json"),
+      `${JSON.stringify(
+        {
+          providers: {
+            openrouter: {
+              baseUrl: "https://openrouter.ai/api/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "auto",
+                  name: "OpenRouter Auto",
+                  reasoning: false,
+                  input: ["text", "image"],
+                  cost: {
+                    input: 0,
+                    output: 0,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                  },
+                  contextWindow: 200000,
+                  maxTokens: 8192,
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    discoverModelsMock.mockReturnValue({
+      find: vi.fn(() => null),
+    });
+    completeMock.mockResolvedValue({
+      role: "assistant",
+      api: "openai-completions",
+      provider: "openrouter",
+      model: "qwen/qwen-2.5-vl-7b-instruct",
+      stopReason: "stop",
+      timestamp: Date.now(),
+      content: [{ type: "text", text: "ocr via models json" }],
+    });
+
+    try {
+      const result = await describeImageWithModel({
+        cfg: {},
+        agentDir,
+        provider: "openrouter",
+        model: "qwen/qwen-2.5-vl-7b-instruct",
+        buffer: Buffer.from("png-bytes"),
+        fileName: "image.png",
+        mime: "image/png",
+        prompt: "Describe the image.",
+        timeoutMs: 1000,
+      });
+
+      expect(result).toEqual({
+        text: "ocr via models json",
+        model: "qwen/qwen-2.5-vl-7b-instruct",
+      });
+      expect(getApiKeyForModelMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: expect.objectContaining({
+            provider: "openrouter",
+            id: "qwen/qwen-2.5-vl-7b-instruct",
+            baseUrl: "https://openrouter.ai/api/v1",
+            input: ["text", "image"],
+          }),
+        }),
+      );
+      expect(setRuntimeApiKeyMock).toHaveBeenCalledWith("openrouter", "oauth-test");
+      expect(completeMock).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(agentDir, { recursive: true, force: true });
+    }
   });
 });

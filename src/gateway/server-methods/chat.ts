@@ -900,19 +900,39 @@ function broadcastChatFinal(params: {
   message?: Record<string, unknown>;
 }) {
   const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
-  const strippedEnvelopeMessage = stripEnvelopeFromMessage(params.message) as
-    | Record<string, unknown>
-    | undefined;
   const payload = {
     runId: params.runId,
     sessionKey: params.sessionKey,
     seq,
     state: "final" as const,
-    message: stripInlineDirectiveTagsFromMessageForDisplay(strippedEnvelopeMessage),
+    message: toChatDisplayMessage(params.message),
   };
   params.context.broadcast("chat", payload);
   params.context.nodeSendToSession(params.sessionKey, "chat", payload);
   params.context.agentRunSeq.delete(params.runId);
+  return payload;
+}
+
+function toChatDisplayMessage(
+  message?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const strippedEnvelopeMessage = stripEnvelopeFromMessage(message) as
+    | Record<string, unknown>
+    | undefined;
+  return stripInlineDirectiveTagsFromMessageForDisplay(strippedEnvelopeMessage);
+}
+
+function createSyntheticAssistantMessage(
+  text: string,
+  timestamp = Date.now(),
+): Record<string, unknown> {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    timestamp,
+    stopReason: "stop",
+    usage: { input: 0, output: 0, totalTokens: 0 },
+  };
 }
 
 function isBtwReplyPayload(payload: ReplyPayload | undefined): payload is ReplyPayload & {
@@ -1378,6 +1398,14 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
 
       let agentRunStarted = false;
+      let finalResponsePayload: {
+        runId: string;
+        status: "ok";
+        message?: Record<string, unknown>;
+      } = {
+        runId: clientRunId,
+        status: "ok",
+      };
       void dispatchInboundMessage({
         ctx,
         cfg,
@@ -1410,15 +1438,22 @@ export const chatHandlers: GatewayRequestHandlers = {
       })
         .then(() => {
           emitUserTranscriptUpdate();
+          const btwReplies = deliveredReplies
+            .map((entry) => entry.payload)
+            .filter(isBtwReplyPayload);
+          const btwText = btwReplies
+            .map((payload) => payload.text.trim())
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
+          const combinedReply = deliveredReplies
+            .filter((entry) => entry.kind === "final")
+            .map((entry) => entry.payload)
+            .map((part) => part.text?.trim() ?? "")
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
           if (!agentRunStarted) {
-            const btwReplies = deliveredReplies
-              .map((entry) => entry.payload)
-              .filter(isBtwReplyPayload);
-            const btwText = btwReplies
-              .map((payload) => payload.text.trim())
-              .filter(Boolean)
-              .join("\n\n")
-              .trim();
             if (btwReplies.length > 0 && btwText) {
               broadcastSideResult({
                 context,
@@ -1432,19 +1467,17 @@ export const chatHandlers: GatewayRequestHandlers = {
                   ts: Date.now(),
                 },
               });
-              broadcastChatFinal({
+              const finalPayload = broadcastChatFinal({
                 context,
                 runId: clientRunId,
                 sessionKey: rawSessionKey,
               });
+              finalResponsePayload = {
+                runId: clientRunId,
+                status: "ok",
+                message: finalPayload.message,
+              };
             } else {
-              const combinedReply = deliveredReplies
-                .filter((entry) => entry.kind === "final")
-                .map((entry) => entry.payload)
-                .map((part) => part.text?.trim() ?? "")
-                .filter(Boolean)
-                .join("\n\n")
-                .trim();
               let message: Record<string, unknown> | undefined;
               if (combinedReply) {
                 const { storePath: latestStorePath, entry: latestEntry } =
@@ -1464,25 +1497,29 @@ export const chatHandlers: GatewayRequestHandlers = {
                   context.logGateway.warn(
                     `webchat transcript append failed: ${appended.error ?? "unknown error"}`,
                   );
-                  const now = Date.now();
-                  message = {
-                    role: "assistant",
-                    content: [{ type: "text", text: combinedReply }],
-                    timestamp: now,
-                    // Keep this compatible with Pi stopReason enums even though this message isn't
-                    // persisted to the transcript due to the append failure.
-                    stopReason: "stop",
-                    usage: { input: 0, output: 0, totalTokens: 0 },
-                  };
+                  // Keep this compatible with Pi stopReason enums even though this message isn't
+                  // persisted to the transcript due to the append failure.
+                  message = createSyntheticAssistantMessage(combinedReply);
                 }
               }
-              broadcastChatFinal({
+              const finalPayload = broadcastChatFinal({
                 context,
                 runId: clientRunId,
                 sessionKey: rawSessionKey,
                 message,
               });
+              finalResponsePayload = {
+                runId: clientRunId,
+                status: "ok",
+                message: finalPayload.message,
+              };
             }
+          } else if (combinedReply) {
+            finalResponsePayload = {
+              runId: clientRunId,
+              status: "ok",
+              message: toChatDisplayMessage(createSyntheticAssistantMessage(combinedReply)),
+            };
           }
           setGatewayDedupeEntry({
             dedupe: context.dedupe,
@@ -1493,20 +1530,22 @@ export const chatHandlers: GatewayRequestHandlers = {
               payload: { runId: clientRunId, status: "ok" as const },
             },
           });
+          respond(true, finalResponsePayload, undefined, { runId: clientRunId });
         })
         .catch((err) => {
           const error = errorShape(ErrorCodes.UNAVAILABLE, String(err));
+          const payload = {
+            runId: clientRunId,
+            status: "error" as const,
+            summary: String(err),
+          };
           setGatewayDedupeEntry({
             dedupe: context.dedupe,
             key: `chat:${clientRunId}`,
             entry: {
               ts: Date.now(),
               ok: false,
-              payload: {
-                runId: clientRunId,
-                status: "error" as const,
-                summary: String(err),
-              },
+              payload,
               error,
             },
           });
@@ -1515,6 +1554,10 @@ export const chatHandlers: GatewayRequestHandlers = {
             runId: clientRunId,
             sessionKey: rawSessionKey,
             errorMessage: String(err),
+          });
+          respond(false, payload, error, {
+            runId: clientRunId,
+            error: formatForLog(err),
           });
         })
         .finally(() => {

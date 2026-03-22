@@ -1786,7 +1786,7 @@ Local onboarding defaults new local configs to `tools.profile: "coding"` when un
 | Profile     | Includes                                                                                  |
 | ----------- | ----------------------------------------------------------------------------------------- |
 | `minimal`   | `session_status` only                                                                     |
-| `coding`    | `group:fs`, `group:runtime`, `group:sessions`, `group:memory`, `image`                    |
+| `coding`    | `group:fs`, `group:runtime`, `group:web`, `group:sessions`, `group:memory`, `image`       |
 | `messaging` | `group:messaging`, `sessions_list`, `sessions_history`, `sessions_send`, `session_status` |
 | `full`      | No restriction (same as unset)                                                            |
 

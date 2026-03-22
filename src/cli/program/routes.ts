@@ -153,6 +153,9 @@ const routeAgentsList: RouteSpec = {
 
 const routeMemoryStatus: RouteSpec = {
   match: (path) => path[0] === "memory" && path[1] === "status",
+  // Memory status relies on the active memory plugin registering its manager
+  // provider, including JSON output that still resolves plugin-backed status.
+  loadPlugins: true,
   run: async (argv) => {
     const agent = getFlagValue(argv, "--agent");
     if (agent === null) {

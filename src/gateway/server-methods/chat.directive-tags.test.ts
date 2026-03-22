@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   sessionId: "sess-1",
   mainSessionKey: "main",
   finalText: "[[reply_to_current]]",
+  dispatchError: undefined as Error | undefined,
   triggerAgentRunStart: false,
   agentRunId: "run-agent-1",
   sessionEntry: {} as Record<string, unknown>,
@@ -70,6 +71,9 @@ vi.mock("../../auto-reply/dispatch.js", () => ({
       };
     }) => {
       mockState.lastDispatchCtx = params.ctx;
+      if (mockState.dispatchError) {
+        throw mockState.dispatchError;
+      }
       if (mockState.triggerAgentRunStart) {
         params.replyOptions?.onAgentRunStart?.(mockState.agentRunId);
       }
@@ -251,6 +255,7 @@ async function runNonStreamingChatSend(params: {
 describe("chat directive tag stripping for non-streaming final payloads", () => {
   afterEach(() => {
     mockState.finalText = "[[reply_to_current]]";
+    mockState.dispatchError = undefined;
     mockState.mainSessionKey = "main";
     mockState.triggerAgentRunStart = false;
     mockState.agentRunId = "run-agent-1";
@@ -370,6 +375,103 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       }),
     );
     expect(extractFirstTextBlock(payload)).toBe("");
+  });
+
+  it("chat.send responds with ack first and final payload after completion", async () => {
+    createTranscriptFixture("openclaw-chat-send-final-response-");
+    mockState.finalText = "final response body";
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    const payload = await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-final-response",
+    });
+
+    expect(payload).toEqual(
+      expect.objectContaining({
+        runId: "idem-final-response",
+        state: "final",
+        message: expect.any(Object),
+      }),
+    );
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond.mock.calls[0]?.[0]).toBe(true);
+    expect(respond.mock.calls[0]?.[1]).toMatchObject({
+      runId: "idem-final-response",
+      status: "started",
+    });
+    expect(respond.mock.calls[1]?.[0]).toBe(true);
+    expect(respond.mock.calls[1]?.[1]).toMatchObject({
+      runId: "idem-final-response",
+      status: "ok",
+      message: expect.any(Object),
+    });
+    expect(extractFirstTextBlock({ message: respond.mock.calls[1]?.[1]?.message })).toBe(
+      "final response body",
+    );
+  });
+
+  it("chat.send includes final message in the terminal response after an agent run starts", async () => {
+    createTranscriptFixture("openclaw-chat-send-final-response-agent-run-");
+    mockState.finalText = "agent-run final body";
+    mockState.triggerAgentRunStart = true;
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-final-response-agent-run",
+      expectBroadcast: false,
+    });
+
+    await waitForAssertion(() => {
+      expect(respond).toHaveBeenCalledTimes(2);
+    });
+    expect(respond.mock.calls[0]?.[0]).toBe(true);
+    expect(respond.mock.calls[0]?.[1]).toMatchObject({
+      runId: "idem-final-response-agent-run",
+      status: "started",
+    });
+    expect(respond.mock.calls[1]?.[0]).toBe(true);
+    expect(respond.mock.calls[1]?.[1]).toMatchObject({
+      runId: "idem-final-response-agent-run",
+      status: "ok",
+      message: expect.any(Object),
+    });
+    expect(extractFirstTextBlock({ message: respond.mock.calls[1]?.[1]?.message })).toBe(
+      "agent-run final body",
+    );
+  });
+
+  it("chat.send responds with terminal error after started ack when dispatch fails", async () => {
+    createTranscriptFixture("openclaw-chat-send-final-error-");
+    mockState.dispatchError = new Error("dispatch failed");
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-final-error",
+    });
+
+    await waitForAssertion(() => {
+      expect(respond).toHaveBeenCalledTimes(2);
+    });
+    expect(respond.mock.calls[0]?.[0]).toBe(true);
+    expect(respond.mock.calls[0]?.[1]).toMatchObject({
+      runId: "idem-final-error",
+      status: "started",
+    });
+    expect(respond.mock.calls[1]?.[0]).toBe(false);
+    expect(respond.mock.calls[1]?.[1]).toMatchObject({
+      runId: "idem-final-error",
+      status: "error",
+      summary: "Error: dispatch failed",
+    });
   });
 
   it("rejects oversized chat.send session keys before dispatch", async () => {

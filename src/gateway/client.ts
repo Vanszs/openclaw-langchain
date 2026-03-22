@@ -119,6 +119,10 @@ export function describeGatewayCloseCode(code: number): string | undefined {
   return GATEWAY_CLOSE_CODE_HINTS[code];
 }
 
+function isNonTerminalGatewayAckStatus(status: unknown): boolean {
+  return status === "accepted" || status === "started";
+}
+
 const FORCE_STOP_TERMINATE_GRACE_MS = 250;
 const STOP_AND_WAIT_TIMEOUT_MS = 1_000;
 
@@ -665,10 +669,11 @@ export class GatewayClient {
         if (!pending) {
           return;
         }
-        // If the payload is an ack with status accepted, keep waiting for final.
+        // Agent/chat RPCs can acknowledge work as accepted, started, or in-flight
+        // before emitting a terminal response under the same request id.
         const payload = parsed.payload as { status?: unknown } | undefined;
         const status = payload?.status;
-        if (pending.expectFinal && status === "accepted") {
+        if (pending.expectFinal && isNonTerminalGatewayAckStatus(status)) {
           return;
         }
         this.pending.delete(parsed.id);
