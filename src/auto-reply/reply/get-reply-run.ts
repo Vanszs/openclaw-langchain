@@ -98,11 +98,35 @@ function extractAttachmentContextSummaryMarker(note?: string): string | undefine
 function buildFollowupSummaryLine(params: {
   baseBody: string;
   attachmentRetrievalNote?: string;
+  memoryRecallNote?: string;
   hasMedia: boolean;
 }): string {
   const attachmentMarker = extractAttachmentContextSummaryMarker(params.attachmentRetrievalNote);
+  const memoryMarker = extractMemoryRecallSummaryMarker(params.memoryRecallNote);
   const baseText = params.baseBody.trim() || (params.hasMedia ? "[media-only]" : "");
-  return [attachmentMarker, baseText].filter(Boolean).join(" ").trim();
+  return [attachmentMarker, memoryMarker, baseText].filter(Boolean).join(" ").trim();
+}
+
+function extractMemoryRecallSummaryMarker(note?: string): string | undefined {
+  if (!note?.trim()) {
+    return undefined;
+  }
+  const lines = note
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const markers = ["memory-context"];
+  const retrievalStatus = lines.find((line) => line.startsWith("Retrieval status: "));
+  if (retrievalStatus) {
+    markers.push(
+      `status=${normalizeSummaryToken(retrievalStatus.replace("Retrieval status: ", ""), 48)}`,
+    );
+  }
+  const query = lines.find((line) => line.startsWith("Query: "));
+  if (query) {
+    markers.push(`query=${normalizeSummaryToken(query.replace("Query: ", ""), 48)}`);
+  }
+  return `[${markers.join(" | ")}]`;
 }
 
 function buildResetSessionNoticeText(params: {
@@ -319,11 +343,30 @@ export async function runPreparedReply(
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
   );
+  let memoryRecallContext:
+    | {
+        note: string;
+        systemPromptHint: string;
+      }
+    | undefined;
+  try {
+    const { buildDeterministicMemoryRecallContext } = await import("../memory-recall.runtime.js");
+    memoryRecallContext = await buildDeterministicMemoryRecallContext({
+      ctx,
+      cfg,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+    });
+  } catch (error) {
+    logVerbose(
+      `memory-recall: failed, continuing without deterministic recall context: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const extraSystemPromptParts = [
     inboundMetaPrompt,
     groupChatContext,
     groupIntro,
     groupSystemPrompt,
+    memoryRecallContext?.systemPromptHint,
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
@@ -427,6 +470,7 @@ export async function runPreparedReply(
   const untrustedContext = [
     ...(Array.isArray(sessionCtx.UntrustedContext) ? sessionCtx.UntrustedContext : []),
     ...(attachmentRetrievalNote ? [attachmentRetrievalNote] : []),
+    ...(memoryRecallContext?.note ? [memoryRecallContext.note] : []),
   ];
   prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, untrustedContext);
   const threadStarterBody = ctx.ThreadStarterBody?.trim();
@@ -548,6 +592,7 @@ export async function runPreparedReply(
     summaryLine: buildFollowupSummaryLine({
       baseBody: baseBodyTrimmedRaw,
       attachmentRetrievalNote,
+      memoryRecallNote: memoryRecallContext?.note,
       hasMedia: Boolean(mediaNote),
     }),
     enqueuedAt: Date.now(),
