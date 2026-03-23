@@ -1,5 +1,7 @@
 export type MemorySource = "memory" | "sessions" | "repo" | "docs" | "chat" | "email";
 
+export type MemoryDomain = "user_memory" | "docs_kb" | "history";
+
 export type MemorySearchResult = {
   path: string;
   startLine: number;
@@ -7,6 +9,7 @@ export type MemorySearchResult = {
   score: number;
   snippet: string;
   source: MemorySource;
+  domain?: MemoryDomain;
   citation?: string;
 };
 
@@ -61,7 +64,13 @@ export type MemoryProviderStatus = {
 export interface MemorySearchManager {
   search(
     query: string,
-    opts?: { maxResults?: number; minScore?: number; sessionKey?: string },
+    opts?: {
+      maxResults?: number;
+      minScore?: number;
+      sessionKey?: string;
+      sources?: MemorySource[];
+      domain?: MemoryDomain;
+    },
   ): Promise<MemorySearchResult[]>;
   readFile(params: {
     relPath: string;

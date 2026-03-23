@@ -98,16 +98,16 @@ function extractAttachmentContextSummaryMarker(note?: string): string | undefine
 function buildFollowupSummaryLine(params: {
   baseBody: string;
   attachmentRetrievalNote?: string;
-  memoryRecallNote?: string;
+  retrievalContextNote?: string;
   hasMedia: boolean;
 }): string {
   const attachmentMarker = extractAttachmentContextSummaryMarker(params.attachmentRetrievalNote);
-  const memoryMarker = extractMemoryRecallSummaryMarker(params.memoryRecallNote);
+  const retrievalMarker = extractRetrievalContextSummaryMarker(params.retrievalContextNote);
   const baseText = params.baseBody.trim() || (params.hasMedia ? "[media-only]" : "");
-  return [attachmentMarker, memoryMarker, baseText].filter(Boolean).join(" ").trim();
+  return [attachmentMarker, retrievalMarker, baseText].filter(Boolean).join(" ").trim();
 }
 
-function extractMemoryRecallSummaryMarker(note?: string): string | undefined {
+function extractRetrievalContextSummaryMarker(note?: string): string | undefined {
   if (!note?.trim()) {
     return undefined;
   }
@@ -115,7 +115,11 @@ function extractMemoryRecallSummaryMarker(note?: string): string | undefined {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const markers = ["memory-context"];
+  const markers = ["retrieval-context"];
+  const domain = lines.find((line) => line.startsWith("Domain: "));
+  if (domain) {
+    markers.push(`domain=${normalizeSummaryToken(domain.replace("Domain: ", ""), 32)}`);
+  }
   const retrievalStatus = lines.find((line) => line.startsWith("Retrieval status: "));
   if (retrievalStatus) {
     markers.push(
@@ -343,19 +347,33 @@ export async function runPreparedReply(
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
   );
-  let memoryRecallContext:
+  let retrievalContext:
     | {
+        domain: "user_memory" | "docs_kb" | "history" | "web_search";
         note: string;
         systemPromptHint: string;
       }
     | undefined;
   try {
-    const { buildDeterministicMemoryRecallContext } = await import("../memory-recall.runtime.js");
-    memoryRecallContext = await buildDeterministicMemoryRecallContext({
-      ctx,
+    const { buildDeterministicWebSearchContext } = await import("../web-search-recall.runtime.js");
+    retrievalContext = await buildDeterministicWebSearchContext({
       cfg,
       query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
     });
+  } catch (error) {
+    logVerbose(
+      `web-search-recall: failed, continuing without deterministic web-search context: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    const { buildDeterministicMemoryRecallContext } = await import("../memory-recall.runtime.js");
+    if (!retrievalContext) {
+      retrievalContext = await buildDeterministicMemoryRecallContext({
+        ctx,
+        cfg,
+        query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+      });
+    }
   } catch (error) {
     logVerbose(
       `memory-recall: failed, continuing without deterministic recall context: ${error instanceof Error ? error.message : String(error)}`,
@@ -366,7 +384,7 @@ export async function runPreparedReply(
     groupChatContext,
     groupIntro,
     groupSystemPrompt,
-    memoryRecallContext?.systemPromptHint,
+    retrievalContext?.systemPromptHint,
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
@@ -467,10 +485,33 @@ export async function runPreparedReply(
       `attachment-rag: failed, continuing without retrieved file context: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  try {
+    const { maybeHandleDeterministicMemorySave } = await import("../memory-save.js");
+    const saveAction = await maybeHandleDeterministicMemorySave({
+      ctx,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+      workspaceDir,
+      attachmentRetrievalNote,
+      retrievalContext: retrievalContext
+        ? {
+            domain: retrievalContext.domain,
+            note: retrievalContext.note,
+          }
+        : undefined,
+    });
+    if (saveAction) {
+      typing.cleanup();
+      return { text: saveAction.reply };
+    }
+  } catch (error) {
+    logVerbose(
+      `memory-save: failed, continuing without deterministic save routing: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const untrustedContext = [
     ...(Array.isArray(sessionCtx.UntrustedContext) ? sessionCtx.UntrustedContext : []),
     ...(attachmentRetrievalNote ? [attachmentRetrievalNote] : []),
-    ...(memoryRecallContext?.note ? [memoryRecallContext.note] : []),
+    ...(retrievalContext?.note ? [retrievalContext.note] : []),
   ];
   prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, untrustedContext);
   const threadStarterBody = ctx.ThreadStarterBody?.trim();
@@ -592,7 +633,7 @@ export async function runPreparedReply(
     summaryLine: buildFollowupSummaryLine({
       baseBody: baseBodyTrimmedRaw,
       attachmentRetrievalNote,
-      memoryRecallNote: memoryRecallContext?.note,
+      retrievalContextNote: retrievalContext?.note,
       hasMedia: Boolean(mediaNote),
     }),
     enqueuedAt: Date.now(),

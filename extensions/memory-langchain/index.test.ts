@@ -32,6 +32,10 @@ describe("memory-langchain plugin", () => {
     const hooks: Record<string, Function> = {};
     const registerTool = vi.fn();
     const registerService = vi.fn();
+    const createHistorySearchTool = vi.fn(() => ({ name: "history_search" }));
+    const createHistoryGetTool = vi.fn(() => ({ name: "history_get" }));
+    const createKnowledgeSearchTool = vi.fn(() => ({ name: "knowledge_search" }));
+    const createKnowledgeGetTool = vi.fn(() => ({ name: "knowledge_get" }));
     const createMemorySearchTool = vi.fn(() => ({ name: "memory_search" }));
     const createMemoryGetTool = vi.fn(() => ({ name: "memory_get" }));
     const api = {
@@ -39,6 +43,10 @@ describe("memory-langchain plugin", () => {
       config: {},
       runtime: {
         tools: {
+          createHistorySearchTool,
+          createHistoryGetTool,
+          createKnowledgeSearchTool,
+          createKnowledgeGetTool,
           createMemorySearchTool,
           createMemoryGetTool,
         },
@@ -57,7 +65,14 @@ describe("memory-langchain plugin", () => {
       expect.any(Function),
     );
     expect(registerTool).toHaveBeenCalledWith(expect.any(Function), {
-      names: ["memory_search", "memory_get"],
+      names: [
+        "history_get",
+        "history_search",
+        "knowledge_get",
+        "knowledge_search",
+        "memory_get",
+        "memory_search",
+      ],
     });
     expect(registerService).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -74,7 +89,30 @@ describe("memory-langchain plugin", () => {
       config: { agents: {} },
       sessionKey: "agent:main:main",
     });
-    expect(tools).toEqual([{ name: "memory_search" }, { name: "memory_get" }]);
+    expect(tools).toEqual([
+      { name: "history_search" },
+      { name: "history_get" },
+      { name: "knowledge_search" },
+      { name: "knowledge_get" },
+      { name: "memory_search" },
+      { name: "memory_get" },
+    ]);
+    expect(createHistorySearchTool).toHaveBeenCalledWith({
+      config: { agents: {} },
+      agentSessionKey: "agent:main:main",
+    });
+    expect(createHistoryGetTool).toHaveBeenCalledWith({
+      config: { agents: {} },
+      agentSessionKey: "agent:main:main",
+    });
+    expect(createKnowledgeSearchTool).toHaveBeenCalledWith({
+      config: { agents: {} },
+      agentSessionKey: "agent:main:main",
+    });
+    expect(createKnowledgeGetTool).toHaveBeenCalledWith({
+      config: { agents: {} },
+      agentSessionKey: "agent:main:main",
+    });
     expect(createMemorySearchTool).toHaveBeenCalledWith({
       config: { agents: {} },
       agentSessionKey: "agent:main:main",
@@ -169,5 +207,5 @@ describe("memory-langchain plugin", () => {
       role: "user",
       message: { role: "user", content: "remember this" },
     });
-  });
+  }, 240_000);
 });

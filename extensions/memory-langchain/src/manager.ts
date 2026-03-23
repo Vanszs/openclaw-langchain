@@ -30,6 +30,7 @@ import type {
 import {
   LANGCHAIN_VIRTUAL_ROOT,
   type LangchainAgentConfig,
+  type LangchainMemoryDomain,
   type LangchainMemoryScope,
   type LangchainMemorySource,
   type LangchainPluginConfig,
@@ -44,6 +45,7 @@ import {
 type StoredDocumentMetadata = {
   source: LangchainMemorySource;
   path: string;
+  domain?: LangchainMemoryDomain;
   title?: string;
   subject?: string;
   from?: string;
@@ -76,6 +78,7 @@ type StoredDocumentMetadata = {
 
 type SourceDocument = {
   source: LangchainMemorySource;
+  domain: LangchainMemoryDomain;
   path: string;
   absPath: string;
   title: string;
@@ -91,6 +94,7 @@ type ChunkedSourceDocument = {
 };
 
 type ManifestEntry = {
+  domain: LangchainMemoryDomain;
   source: LangchainMemorySource;
   path: string;
   hash: string;
@@ -122,22 +126,15 @@ type LangchainStatusFile = {
   chromaUrl: string;
   collectionName: string;
   sourceCounts: Array<{ source: LangchainMemorySource; files: number; chunks: number }>;
+  collections?: Partial<Record<LangchainMemoryDomain, string>>;
 };
 
 type SyncReason = "cli" | "service";
-type SearchParams = {
-  query: string;
-  maxResults?: number;
-  minScore?: number;
-  sessionKey?: string;
-  sources?: LangchainMemorySource[];
-  scope?: LangchainMemoryScope;
-};
-
 const EMPTY_MANIFEST: IndexManifest = {
   version: 1,
   documents: {},
 };
+const DOMAIN_ORDER: LangchainMemoryDomain[] = ["user_memory", "docs_kb", "history"];
 
 const TEXT_FILE_EXTENSIONS = new Set([
   ".c",
@@ -228,6 +225,66 @@ function sanitizeSnippet(text: string): string {
     .replace(/\r\n/g, "\n");
 }
 
+function resolveDomainSources(domain: LangchainMemoryDomain): LangchainMemorySource[] {
+  if (domain === "user_memory") {
+    return ["memory"];
+  }
+  if (domain === "docs_kb") {
+    return ["docs", "repo"];
+  }
+  return ["chat", "email", "sessions"];
+}
+
+function inferDomainFromSources(
+  sources: LangchainMemorySource[] | undefined,
+): LangchainMemoryDomain | undefined {
+  if (!sources || sources.length === 0) {
+    return undefined;
+  }
+  const unique = Array.from(new Set(sources));
+  if (unique.length === 1 && unique[0] === "memory") {
+    return "user_memory";
+  }
+  if (unique.every((source) => source === "docs" || source === "repo")) {
+    return "docs_kb";
+  }
+  if (unique.every((source) => source === "chat" || source === "email" || source === "sessions")) {
+    return "history";
+  }
+  return undefined;
+}
+
+function isUserMemoryPath(relPath: string): boolean {
+  return relPath.trim().replace(/\\/g, "/").startsWith("memory/facts/");
+}
+
+function isDocsKbPath(relPath: string): boolean {
+  return relPath.trim().replace(/\\/g, "/").startsWith("memory/knowledge/");
+}
+
+function isHistoryPath(relPath: string): boolean {
+  const normalized = relPath.trim().replace(/\\/g, "/");
+  return (
+    normalized.startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/chat/`) ||
+    normalized.startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/email/`) ||
+    normalized.startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/sessions/`) ||
+    normalized.startsWith(`${LANGCHAIN_VIRTUAL_ROOT}/${SESSION_TRANSCRIPT_FALLBACK_DIR}/`)
+  );
+}
+
+function inferDomainFromPath(relPath: string): LangchainMemoryDomain | undefined {
+  if (isUserMemoryPath(relPath)) {
+    return "user_memory";
+  }
+  if (isDocsKbPath(relPath)) {
+    return "docs_kb";
+  }
+  if (isHistoryPath(relPath)) {
+    return "history";
+  }
+  return undefined;
+}
+
 function buildChromaWhereFilter(filter?: Record<string, string>): Where | undefined {
   if (!filter) {
     return undefined;
@@ -264,7 +321,7 @@ function collectDistinctiveQueryNeedles(query: string): string[] {
   return Array.from(needles);
 }
 
-async function collectExactMemoryMatches(params: {
+async function collectExactUserMemoryMatches(params: {
   workspaceDir: string;
   query: string;
   maxResults: number;
@@ -275,22 +332,19 @@ async function collectExactMemoryMatches(params: {
   if (needles.length === 0) {
     return;
   }
-  const candidateFiles = [
-    path.join(params.workspaceDir, "MEMORY.md"),
-    ...(await listFilesRecursive(path.join(params.workspaceDir, "memory"), (absPath) =>
-      absPath.toLowerCase().endsWith(".md"),
-    )),
-  ];
+  const candidateFiles = await listFilesRecursive(
+    path.join(params.workspaceDir, "memory", "facts"),
+    (absPath) => absPath.toLowerCase().endsWith(".json"),
+  );
   for (const absPath of candidateFiles) {
     if (params.mapped.length >= params.maxResults) {
       return;
     }
-    let content = "";
-    try {
-      content = await fs.readFile(absPath, "utf-8");
-    } catch {
+    const record = await readUserMemoryFactRecord(absPath);
+    if (!record || record.status !== "active") {
       continue;
     }
+    const content = formatUserMemoryFactForIndex(record);
     const normalizedContent = content.toLowerCase();
     const matchedNeedle = needles.find((needle) => normalizedContent.includes(needle));
     if (!matchedNeedle) {
@@ -321,8 +375,83 @@ async function collectExactMemoryMatches(params: {
       score: 0.99,
       snippet,
       source: "memory",
+      domain: "user_memory",
     });
   }
+}
+
+type UserMemoryFactRecord = {
+  id: string;
+  namespace: string;
+  key: string;
+  value: string;
+  status: "active" | "superseded" | "deleted";
+};
+
+type DocsKbRecord = {
+  docId: string;
+  title: string;
+  body: string;
+  status: "active" | "superseded" | "deleted";
+  version: number;
+  sourceType: "repo" | "docs" | "web" | "attachment" | "manual-note";
+};
+
+async function readUserMemoryFactRecord(absPath: string): Promise<UserMemoryFactRecord | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(absPath, "utf-8")) as UserMemoryFactRecord;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.id !== "string" ||
+      typeof parsed.namespace !== "string" ||
+      typeof parsed.key !== "string" ||
+      typeof parsed.value !== "string" ||
+      typeof parsed.status !== "string"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function readDocsKbRecord(absPath: string): Promise<DocsKbRecord | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(absPath, "utf-8")) as DocsKbRecord;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.docId !== "string" ||
+      typeof parsed.title !== "string" ||
+      typeof parsed.body !== "string" ||
+      typeof parsed.status !== "string"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function formatUserMemoryFactForIndex(record: UserMemoryFactRecord): string {
+  return [
+    "# User Memory Fact",
+    `Namespace: ${record.namespace}`,
+    `Key: ${record.key}`,
+    `Status: ${record.status}`,
+    "",
+    record.value.trim(),
+  ].join("\n");
+}
+
+function buildDomainManifestPath(
+  plugin: Pick<LangchainPluginConfig, "manifestPath">,
+  domain: LangchainMemoryDomain,
+): string {
+  return plugin.manifestPath.replace(/\.json$/i, `.${domain}.json`);
 }
 
 function ensureDirSync(dir: string): void {
@@ -536,10 +665,11 @@ async function chunkDocument(
     const endLine = lineNumberFromIndex(lineStarts, Math.max(charStart, charEnd - 1));
     searchOffset = Math.max(charStart + 1, charEnd - Math.max(1, cfg.chunkOverlap));
     chunks.push({
-      id: makeStableId([document.source, document.path, index]),
+      id: makeStableId([document.domain, document.source, document.path, index]),
       pageContent: chunkText,
       metadata: {
         source: document.source,
+        domain: document.domain,
         path: document.path,
         title: document.title,
         startLine,
@@ -643,8 +773,12 @@ function countBySource(docs: SourceDocument[], chunks: ChunkedSourceDocument[]) 
     .toSorted((left, right) => left.source.localeCompare(right.source));
 }
 
-function buildManifestKey(source: LangchainMemorySource, relPath: string): string {
-  return `${source}::${relPath}`;
+function buildManifestKey(
+  domain: LangchainMemoryDomain,
+  source: LangchainMemorySource,
+  relPath: string,
+): string {
+  return `${domain}::${source}::${relPath}`;
 }
 
 function buildSessionTranscriptFallbackPath(fileName: string): string {
@@ -661,11 +795,13 @@ async function loadStoredDocumentMetadata(absPath: string): Promise<StoredDocume
   return await readJsonFile<StoredDocumentMetadata>(metaPath, {
     source: "chat",
     path: path.basename(absPath),
+    domain: "history",
   });
 }
 
 async function buildDocumentFromFile(params: {
   source: LangchainMemorySource;
+  domain: LangchainMemoryDomain;
   absPath: string;
   workspaceDir: string;
   virtualRoot?: string;
@@ -684,10 +820,12 @@ async function buildDocumentFromFile(params: {
       : ({
           source: params.source,
           path: relPath,
+          domain: params.domain,
           title: path.basename(params.absPath),
         } satisfies StoredDocumentMetadata);
   return {
     source: params.source,
+    domain: params.domain,
     path: metadata.path || relPath,
     absPath: params.absPath,
     title: metadata.title || path.basename(params.absPath),
@@ -696,41 +834,102 @@ async function buildDocumentFromFile(params: {
     metadata: {
       ...metadata,
       source: params.source,
+      domain: metadata.domain ?? params.domain,
       path: metadata.path || relPath,
     },
   };
 }
 
-async function collectLegacyMemoryDocuments(
+async function buildDocumentFromText(params: {
+  source: LangchainMemorySource;
+  domain: LangchainMemoryDomain;
+  absPath: string;
+  relPath: string;
+  title: string;
+  content: string;
+  metadata?: Partial<StoredDocumentMetadata>;
+}): Promise<SourceDocument | null> {
+  const content = params.content.trim();
+  if (!content) {
+    return null;
+  }
+  return {
+    source: params.source,
+    domain: params.domain,
+    path: params.relPath,
+    absPath: params.absPath,
+    title: params.title,
+    content,
+    hash: crypto.createHash("sha256").update(content).digest("hex"),
+    metadata: {
+      source: params.source,
+      domain: params.domain,
+      path: params.relPath,
+      title: params.title,
+      ...params.metadata,
+    },
+  };
+}
+
+async function collectCanonicalUserMemoryDocuments(
   agent: LangchainAgentConfig,
 ): Promise<SourceDocument[]> {
   const docs: SourceDocument[] = [];
-  const candidates = [
-    path.join(agent.workspaceDir, "MEMORY.md"),
-    path.join(agent.workspaceDir, "memory.md"),
-  ];
-  for (const candidate of candidates) {
-    if (fsSync.existsSync(candidate)) {
-      const doc = await buildDocumentFromFile({
-        source: "memory",
-        absPath: candidate,
-        workspaceDir: agent.workspaceDir,
-      });
-      if (doc) {
-        docs.push(doc);
-      }
+  const files = await listFilesRecursive(
+    path.join(agent.workspaceDir, "memory", "facts"),
+    (absPath) => path.extname(absPath).toLowerCase() === ".json",
+  );
+  for (const absPath of files) {
+    const record = await readUserMemoryFactRecord(absPath);
+    if (!record || record.status !== "active") {
+      continue;
+    }
+    const relPath = path.relative(agent.workspaceDir, absPath).replace(/\\/g, "/");
+    const doc = await buildDocumentFromText({
+      source: "memory",
+      domain: "user_memory",
+      absPath,
+      relPath,
+      title: `${record.namespace}.${record.key}`,
+      content: formatUserMemoryFactForIndex(record),
+      metadata: {
+        subject: `${record.namespace}.${record.key}`,
+      },
+    });
+    if (doc) {
+      docs.push(doc);
     }
   }
-  const memoryDir = path.join(agent.workspaceDir, "memory");
-  const nested = await listFilesRecursive(
-    memoryDir,
-    (absPath) => path.extname(absPath).toLowerCase() === ".md",
+  return docs;
+}
+
+async function collectDocsKnowledgeDocuments(
+  agent: LangchainAgentConfig,
+): Promise<SourceDocument[]> {
+  const docs: SourceDocument[] = [];
+  const files = await listFilesRecursive(
+    path.join(agent.workspaceDir, "memory", "knowledge"),
+    (absPath) => path.extname(absPath).toLowerCase() === ".json",
   );
-  for (const absPath of nested) {
-    const doc = await buildDocumentFromFile({
-      source: "memory",
-      absPath,
-      workspaceDir: agent.workspaceDir,
+  for (const absMetaPath of files) {
+    const record = await readDocsKbRecord(absMetaPath);
+    if (!record || record.status !== "active") {
+      continue;
+    }
+    const markdownPath = absMetaPath.replace(/\.json$/i, ".md");
+    const content =
+      (await fs.readFile(markdownPath, "utf-8").catch(() => record.body)) ?? record.body;
+    const relPath = path.relative(agent.workspaceDir, markdownPath).replace(/\\/g, "/");
+    const doc = await buildDocumentFromText({
+      source: "docs",
+      domain: "docs_kb",
+      absPath: markdownPath,
+      relPath,
+      title: record.title,
+      content,
+      metadata: {
+        subject: record.title,
+      },
     });
     if (doc) {
       docs.push(doc);
@@ -759,6 +958,7 @@ async function collectWorkspaceDocuments(agent: LangchainAgentConfig): Promise<S
         }
         const doc = await buildDocumentFromFile({
           source,
+          domain: "docs_kb",
           absPath,
           workspaceDir: agent.workspaceDir,
         });
@@ -777,6 +977,7 @@ async function collectWorkspaceDocuments(agent: LangchainAgentConfig): Promise<S
     }
     const doc = await buildDocumentFromFile({
       source,
+      domain: "docs_kb",
       absPath: input,
       workspaceDir: agent.workspaceDir,
     });
@@ -798,6 +999,7 @@ async function collectStoredDocuments(params: {
   for (const absPath of files) {
     const doc = await buildDocumentFromFile({
       source: params.source,
+      domain: "history",
       absPath,
       workspaceDir: params.agent.workspaceDir,
       virtualRoot: buildVirtualDocumentPath(params.source, ""),
@@ -857,6 +1059,7 @@ async function collectSessionTranscriptFallbackDocuments(
     }
     docs.push({
       source: "sessions",
+      domain: "history",
       path: buildSessionTranscriptFallbackPath(path.basename(absPath)),
       absPath,
       title: sessionId,
@@ -864,6 +1067,7 @@ async function collectSessionTranscriptFallbackDocuments(
       hash: crypto.createHash("sha256").update(content).digest("hex"),
       metadata: {
         source: "sessions",
+        domain: "history",
         path: buildSessionTranscriptFallbackPath(path.basename(absPath)),
         title: sessionId,
         sessionKey: sessionId,
@@ -942,9 +1146,10 @@ async function collectDocuments(params: {
 }): Promise<SourceDocument[]> {
   const docs: SourceDocument[] = [];
   if (params.agent.sources.includes("memory")) {
-    docs.push(...(await collectLegacyMemoryDocuments(params.agent)));
+    docs.push(...(await collectCanonicalUserMemoryDocuments(params.agent)));
   }
   if (params.agent.sources.includes("repo") || params.agent.sources.includes("docs")) {
+    docs.push(...(await collectDocsKnowledgeDocuments(params.agent)));
     const workspaceDocs = await collectWorkspaceDocuments(params.agent);
     docs.push(
       ...workspaceDocs.filter((doc) =>
@@ -978,7 +1183,7 @@ async function collectDocuments(params: {
   }
   const deduped = new Map<string, SourceDocument>();
   for (const doc of docs) {
-    deduped.set(buildManifestKey(doc.source, doc.path), doc);
+    deduped.set(buildManifestKey(doc.domain, doc.source, doc.path), doc);
   }
   return Array.from(deduped.values()).toSorted((left, right) =>
     left.path.localeCompare(right.path),
@@ -1078,11 +1283,15 @@ export class LangchainMemoryManager implements MemorySearchManager {
     });
   }
 
-  private async getVectorStore(plugin: LangchainPluginConfig) {
+  private async getVectorStoreForDomain(
+    plugin: LangchainPluginConfig,
+    domain: LangchainMemoryDomain,
+  ) {
     const embeddings = await this.createEmbeddings(plugin);
     const collectionName = resolveLangchainCollectionName({
       collectionPrefix: plugin.collectionPrefix,
       agentId: this.agentId,
+      domain,
     });
     const store = new Chroma(embeddings, {
       url: plugin.chromaUrl,
@@ -1139,7 +1348,20 @@ export class LangchainMemoryManager implements MemorySearchManager {
         resolveLangchainCollectionName({
           collectionPrefix: params.plugin.collectionPrefix,
           agentId: params.agent.agentId,
+          domain: "user_memory",
         }),
+      collections:
+        statusFile?.collections ??
+        Object.fromEntries(
+          DOMAIN_ORDER.map((domain) => [
+            domain,
+            resolveLangchainCollectionName({
+              collectionPrefix: params.plugin.collectionPrefix,
+              agentId: params.agent.agentId,
+              domain,
+            }),
+          ]),
+        ),
       sourceCounts: statusFile?.sourceCounts ?? [],
     } satisfies LangchainStatusFile);
   }
@@ -1160,6 +1382,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
       resolveLangchainCollectionName({
         collectionPrefix: plugin.collectionPrefix,
         agentId: agent.agentId,
+        domain: "user_memory",
       });
     const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
     const failedQueueDepth = readFailedQueueDepth(plugin.queueDir);
@@ -1190,6 +1413,18 @@ export class LangchainMemoryManager implements MemorySearchManager {
         pluginId: "memory-langchain",
         chromaUrl: plugin.chromaUrl,
         collectionName,
+        collections:
+          statusFile?.collections ??
+          Object.fromEntries(
+            DOMAIN_ORDER.map((domain) => [
+              domain,
+              resolveLangchainCollectionName({
+                collectionPrefix: plugin.collectionPrefix,
+                agentId: agent.agentId,
+                domain,
+              }),
+            ]),
+          ),
         queueDepth,
         failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
@@ -1237,7 +1472,20 @@ export class LangchainMemoryManager implements MemorySearchManager {
           resolveLangchainCollectionName({
             collectionPrefix: plugin.collectionPrefix,
             agentId: agent.agentId,
+            domain: "user_memory",
           }),
+        collections:
+          statusFile?.collections ??
+          Object.fromEntries(
+            DOMAIN_ORDER.map((domain) => [
+              domain,
+              resolveLangchainCollectionName({
+                collectionPrefix: plugin.collectionPrefix,
+                agentId: agent.agentId,
+                domain,
+              }),
+            ]),
+          ),
         queueDepth,
         failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
@@ -1266,7 +1514,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
   async probeVectorAvailability(): Promise<boolean> {
     try {
       const { plugin } = await this.resolveRuntime();
-      await this.getVectorStore(plugin);
+      await this.getVectorStoreForDomain(plugin, "user_memory");
       return true;
     } catch {
       return false;
@@ -1282,106 +1530,120 @@ export class LangchainMemoryManager implements MemorySearchManager {
     try {
       ensureDirSync(plugin.documentsDir);
       ensureDirSync(plugin.pendingDir);
-      const { store, collectionName } = await this.getVectorStore(plugin);
-      const manifest = await readJsonFile<IndexManifest>(plugin.manifestPath, EMPTY_MANIFEST);
       const docs = await collectDocuments({ cfg: this.cfg, plugin, agent });
       const allChunks: ChunkedSourceDocument[] = [];
-      const nextManifest: IndexManifest = {
+      const aggregateManifest: IndexManifest = {
         version: 1,
         documents: {},
       };
-      const deleteQueue: string[] = [];
       params?.progress?.({ completed: 0, total: docs.length, label: "Scanning documents" });
-
-      if (params?.force) {
-        const allExistingIds = Object.values(manifest.documents).flatMap((entry) => entry.ids);
-        if (allExistingIds.length > 0) {
-          await deleteIds(store, allExistingIds);
-        }
-      }
-
-      for (let index = 0; index < docs.length; index += 1) {
-        const doc = docs[index];
-        const manifestKey = buildManifestKey(doc.source, doc.path);
-        const previous = params?.force ? undefined : manifest.documents[manifestKey];
-        if (previous && previous.hash === doc.hash) {
-          nextManifest.documents[manifestKey] = previous;
-          params?.progress?.({
-            completed: index + 1,
-            total: docs.length,
-            label: `Unchanged ${doc.path}`,
-          });
-          continue;
-        }
-        if (previous?.ids.length) {
-          deleteQueue.push(...previous.ids);
-        }
-        const chunked = await chunkDocument(doc, plugin);
-        allChunks.push(...chunked);
-        nextManifest.documents[manifestKey] = {
-          source: doc.source,
-          path: doc.path,
-          hash: doc.hash,
-          ids: chunked.map((chunk) => chunk.id),
-          chunks: chunked.length,
-        };
-        params?.progress?.({
-          completed: index + 1,
-          total: docs.length,
-          label: `Indexed ${doc.path}`,
-        });
-      }
-
-      if (!params?.force) {
-        for (const [manifestKey, entry] of Object.entries(manifest.documents)) {
-          if (nextManifest.documents[manifestKey]) {
-            continue;
-          }
-          deleteQueue.push(...entry.ids);
-        }
-      }
-
-      if (deleteQueue.length > 0) {
-        await deleteIds(store, Array.from(new Set(deleteQueue)));
-      }
-
-      const chunkDocs = allChunks.map(
-        (chunk) =>
-          new Document({
-            pageContent: chunk.pageContent,
-            metadata: chunk.metadata,
+      const collectionNames = Object.fromEntries(
+        DOMAIN_ORDER.map((domain) => [
+          domain,
+          resolveLangchainCollectionName({
+            collectionPrefix: plugin.collectionPrefix,
+            agentId: agent.agentId,
+            domain,
           }),
-      );
-      if (chunkDocs.length > 0) {
-        await store.addDocuments(chunkDocs, {
-          ids: allChunks.map((chunk) => chunk.id),
-        });
-      }
-
-      const sourceCounts = countBySource(docs, allChunks);
+        ]),
+      ) as Partial<Record<LangchainMemoryDomain, string>>;
       const queueDepth = (await fs.readdir(plugin.pendingDir).catch(() => [])).filter((entry) =>
         entry.endsWith(".json"),
       ).length;
       let backendReachable = true;
-      let backendError: string | undefined;
+      const backendErrors: string[] = [];
       let chunks = 0;
-      try {
-        const collection = await store.ensureCollection();
-        chunks = await collection.count();
-      } catch (error) {
-        backendReachable = false;
-        backendError = stringifyError(error);
-        chunks = allChunks.length;
+      for (const domain of DOMAIN_ORDER) {
+        const domainDocs = docs.filter((doc) => doc.domain === domain);
+        const domainManifestPath = buildDomainManifestPath(plugin, domain);
+        const manifest = await readJsonFile<IndexManifest>(domainManifestPath, EMPTY_MANIFEST);
+        const nextManifest: IndexManifest = {
+          version: 1,
+          documents: {},
+        };
+        const deleteQueue: string[] = [];
+        const domainChunks: ChunkedSourceDocument[] = [];
+        const { store } = await this.getVectorStoreForDomain(plugin, domain);
+        if (params?.force) {
+          const allExistingIds = Object.values(manifest.documents).flatMap((entry) => entry.ids);
+          if (allExistingIds.length > 0) {
+            await deleteIds(store, allExistingIds);
+          }
+        }
+        for (let index = 0; index < domainDocs.length; index += 1) {
+          const doc = domainDocs[index];
+          const manifestKey = buildManifestKey(domain, doc.source, doc.path);
+          const previous = params?.force ? undefined : manifest.documents[manifestKey];
+          if (previous && previous.hash === doc.hash) {
+            nextManifest.documents[manifestKey] = previous;
+            continue;
+          }
+          if (previous?.ids.length) {
+            deleteQueue.push(...previous.ids);
+          }
+          const chunked = await chunkDocument(doc, plugin);
+          domainChunks.push(...chunked);
+          allChunks.push(...chunked);
+          nextManifest.documents[manifestKey] = {
+            domain,
+            source: doc.source,
+            path: doc.path,
+            hash: doc.hash,
+            ids: chunked.map((chunk) => chunk.id),
+            chunks: chunked.length,
+          };
+        }
+        if (!params?.force) {
+          for (const [manifestKey, entry] of Object.entries(manifest.documents)) {
+            if (nextManifest.documents[manifestKey]) {
+              continue;
+            }
+            deleteQueue.push(...entry.ids);
+          }
+        }
+        if (deleteQueue.length > 0) {
+          await deleteIds(store, Array.from(new Set(deleteQueue)));
+        }
+        if (domainChunks.length > 0) {
+          await store.addDocuments(
+            domainChunks.map(
+              (chunk) =>
+                new Document({
+                  pageContent: chunk.pageContent,
+                  metadata: chunk.metadata,
+                }),
+            ),
+            {
+              ids: domainChunks.map((chunk) => chunk.id),
+            },
+          );
+        }
+        Object.assign(aggregateManifest.documents, nextManifest.documents);
+        await writeJsonFile(domainManifestPath, nextManifest);
+        try {
+          const collection = await store.ensureCollection();
+          chunks += await collection.count();
+        } catch (error) {
+          backendReachable = false;
+          backendErrors.push(`${domain}: ${stringifyError(error)}`);
+          chunks += domainChunks.length;
+        }
       }
 
-      await writeJsonFile(plugin.manifestPath, nextManifest);
+      const sourceCounts = countBySource(docs, allChunks);
+      params?.progress?.({
+        completed: docs.length,
+        total: docs.length,
+        label: "Indexed documents",
+      });
+      await writeJsonFile(plugin.manifestPath, aggregateManifest);
       await writeJsonFile(plugin.statusPath, {
         version: 1,
         pluginId: "memory-langchain",
         agentId: agent.agentId,
         updatedAt: Date.now(),
         backendReachable,
-        backendError,
+        backendError: backendErrors.length > 0 ? backendErrors.join("; ") : undefined,
         lastSyncAt: Date.now(),
         queueDepth,
         files: docs.length,
@@ -1391,7 +1653,14 @@ export class LangchainMemoryManager implements MemorySearchManager {
         roots: agent.roots,
         workspaceDir: agent.workspaceDir,
         chromaUrl: plugin.chromaUrl,
-        collectionName,
+        collectionName:
+          collectionNames.user_memory ??
+          resolveLangchainCollectionName({
+            collectionPrefix: plugin.collectionPrefix,
+            agentId: agent.agentId,
+            domain: "user_memory",
+          }),
+        collections: collectionNames,
         sourceCounts,
         lastError: undefined,
       } satisfies LangchainStatusFile);
@@ -1415,86 +1684,125 @@ export class LangchainMemoryManager implements MemorySearchManager {
       sessionKey?: string;
       sources?: LangchainMemorySource[];
       scope?: LangchainMemoryScope;
+      domain?: LangchainMemoryDomain;
     },
   ): Promise<MemorySearchResult[]> {
     const { plugin, agent } = await this.resolveRuntime();
-    const { store } = await this.getVectorStore(plugin);
     const status = await this.buildStatus();
-    const allowedSources = new Set(
-      (opts?.sources?.length ? opts.sources : agent.sources).filter((source) =>
-        agent.sources.includes(source),
-      ),
+    const requestedSources = (opts?.sources?.length ? opts.sources : agent.sources).filter(
+      (source) => agent.sources.includes(source),
     );
+    const requestedDomain = opts?.domain ?? inferDomainFromSources(requestedSources);
     const maxResults = Math.max(1, opts?.maxResults ?? agent.maxResults);
     const minScore = Math.max(agent.minScore, opts?.minScore ?? agent.minScore);
     const scope = opts?.scope ?? agent.scope;
     const candidateLimit = Math.max(maxResults * 4, 12);
     const dedupe = new Set<string>();
-    const mapped: MemorySearchResult[] = [];
-
-    if (scope !== "session" && allowedSources.has("memory")) {
-      await collectExactMemoryMatches({
-        workspaceDir: agent.workspaceDir,
-        query,
-        maxResults,
-        dedupe,
-        mapped,
-      });
-    }
-
-    const collect = async (filter?: Record<string, string>) => {
-      const results = await store.similaritySearchWithScore(
-        query,
-        candidateLimit,
-        buildChromaWhereFilter(filter),
+    const searchDomain = async (domain: LangchainMemoryDomain): Promise<MemorySearchResult[]> => {
+      const domainSources = new Set(resolveDomainSources(domain));
+      const allowedSources = new Set(
+        requestedSources.filter(
+          (source) => agent.sources.includes(source) && domainSources.has(source),
+        ),
       );
-      for (const [doc, rawScore] of results) {
-        const source = doc.metadata?.source as LangchainMemorySource | undefined;
-        if (!source || !allowedSources.has(source)) {
-          continue;
-        }
-        const score = normalizeScore(rawScore);
-        if (score < minScore) {
-          continue;
-        }
-        const pathValue = typeof doc.metadata?.path === "string" ? doc.metadata.path : "";
-        if (!pathValue) {
-          continue;
-        }
-        const startLine =
-          typeof doc.metadata?.startLine === "number" ? Math.trunc(doc.metadata.startLine) : 1;
-        const endLine =
-          typeof doc.metadata?.endLine === "number" ? Math.trunc(doc.metadata.endLine) : startLine;
-        const dedupeKey = `${pathValue}:${startLine}:${endLine}:${doc.pageContent}`;
-        if (dedupe.has(dedupeKey)) {
-          continue;
-        }
-        dedupe.add(dedupeKey);
-        mapped.push({
-          path: pathValue,
-          startLine,
-          endLine,
-          score,
-          snippet: sanitizeSnippet(doc.pageContent),
-          source,
-        });
-        if (mapped.length >= maxResults) {
-          return;
-        }
+      if (allowedSources.size === 0) {
+        return [];
       }
+      const { store } = await this.getVectorStoreForDomain(plugin, domain);
+      const mapped: MemorySearchResult[] = [];
+
+      if (domain === "user_memory" && scope !== "session" && allowedSources.has("memory")) {
+        await collectExactUserMemoryMatches({
+          workspaceDir: agent.workspaceDir,
+          query,
+          maxResults,
+          dedupe,
+          mapped,
+        });
+      }
+
+      const collect = async (filter?: Record<string, string>) => {
+        const results = await store.similaritySearchWithScore(
+          query,
+          candidateLimit,
+          buildChromaWhereFilter(filter),
+        );
+        for (const [doc, rawScore] of results) {
+          const source = doc.metadata?.source as LangchainMemorySource | undefined;
+          if (!source || !allowedSources.has(source)) {
+            continue;
+          }
+          const score = normalizeScore(rawScore);
+          if (score < minScore) {
+            continue;
+          }
+          const pathValue = typeof doc.metadata?.path === "string" ? doc.metadata.path : "";
+          if (!pathValue) {
+            continue;
+          }
+          const startLine =
+            typeof doc.metadata?.startLine === "number" ? Math.trunc(doc.metadata.startLine) : 1;
+          const endLine =
+            typeof doc.metadata?.endLine === "number"
+              ? Math.trunc(doc.metadata.endLine)
+              : startLine;
+          const dedupeKey = `${pathValue}:${startLine}:${endLine}:${doc.pageContent}`;
+          if (dedupe.has(dedupeKey)) {
+            continue;
+          }
+          dedupe.add(dedupeKey);
+          mapped.push({
+            path: pathValue,
+            startLine,
+            endLine,
+            score,
+            snippet: sanitizeSnippet(doc.pageContent),
+            source,
+            domain,
+          });
+          if (mapped.length >= maxResults) {
+            return;
+          }
+        }
+      };
+
+      if (
+        domain === "history" &&
+        opts?.sessionKey &&
+        (scope === "session" || scope === "prefer_session")
+      ) {
+        await collect({ source: "sessions", sessionKey: opts.sessionKey });
+      }
+
+      if (domain === "user_memory" && mapped.length < maxResults && scope !== "session") {
+        await collect({ source: "memory" });
+      }
+
+      if (domain === "docs_kb" && mapped.length < maxResults) {
+        await collect();
+      }
+
+      if (domain === "history" && mapped.length < maxResults && scope !== "session") {
+        await collect();
+      }
+
+      return mapped;
     };
 
-    if (opts?.sessionKey && (scope === "session" || scope === "prefer_session")) {
-      await collect({ source: "sessions", sessionKey: opts.sessionKey });
-    }
-
-    if (mapped.length < maxResults && scope !== "session" && allowedSources.has("memory")) {
-      await collect({ source: "memory" });
-    }
-
-    if (mapped.length < maxResults && scope !== "session") {
-      await collect();
-    }
+    const mapped = requestedDomain
+      ? await searchDomain(requestedDomain)
+      : (
+          await Promise.all(
+            DOMAIN_ORDER.filter((domain) =>
+              requestedSources.some((source) => resolveDomainSources(domain).includes(source)),
+            ).map((domain) => searchDomain(domain)),
+          )
+        )
+          .flat()
+          .toSorted(
+            (left, right) => right.score - left.score || left.path.localeCompare(right.path),
+          )
+          .slice(0, maxResults);
 
     const fallbackWarning = status.custom?.lastError ?? status.custom?.backendError;
     if (mapped.length === 0 && fallbackWarning) {

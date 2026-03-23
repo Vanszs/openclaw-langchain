@@ -36,6 +36,12 @@ describe("memory recall deterministic routing", () => {
         "Gunakan tool memory_search untuk mencari informasi tentang saya.",
       ),
     ).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("cari docs OpenClaw tentang gateway token")).toBe(
+      true,
+    );
+    expect(shouldInjectDeterministicMemoryRecall("kemarin saya bilang apa tentang DuckDB?")).toBe(
+      true,
+    );
   });
 
   it("does not match memory save requests", () => {
@@ -44,17 +50,18 @@ describe("memory recall deterministic routing", () => {
     ).toBe(false);
   });
 
-  it("returns retrieved memory snippets when search succeeds", async () => {
+  it("returns retrieved user_memory snippets when search succeeds", async () => {
     vi.mocked(getMemorySearchManager).mockResolvedValue({
       manager: {
         search: vi.fn().mockResolvedValue([
           {
-            path: "memory/2026-03-23.md",
+            path: "memory/facts/preferences/framework-favorite.json",
             startLine: 1,
             endLine: 2,
             score: 0.4012,
             snippet: "- Alergi udang\n- Database favorit: DuckDB",
             source: "memory",
+            domain: "user_memory",
           },
         ]),
         readFile: vi.fn(),
@@ -78,11 +85,106 @@ describe("memory recall deterministic routing", () => {
       query: "informasi apa yg anda punya di rag chroma db tentang saya?",
     });
 
-    expect(result?.note).toContain("Retrieved memory recall context");
+    expect(result?.domain).toBe("user_memory");
+    expect(result?.note).toContain("Retrieved context");
+    expect(result?.note).toContain("Domain: user_memory");
     expect(result?.note).toContain("Retrieval status: ok (1 result)");
     expect(result?.note).toContain("Provider: langchain");
     expect(result?.note).toContain("Database favorit: DuckDB");
-    expect(result?.systemPromptHint).toContain("Deterministic memory recall already ran");
+    expect(result?.systemPromptHint).toContain("Deterministic user-memory recall already ran");
+  });
+
+  it("routes docs/reference questions to docs_kb retrieval", async () => {
+    const search = vi.fn().mockResolvedValue([
+      {
+        path: "docs/gateway/configuration.md",
+        startLine: 10,
+        endLine: 12,
+        score: 0.51,
+        snippet: "Gateway token: shared auth for the Gateway + Control UI.",
+        source: "docs",
+        domain: "docs_kb",
+      },
+    ]);
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search,
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue({
+          backend: "plugin",
+          provider: "langchain",
+          model: "text-embedding-3-small",
+          sources: ["docs", "repo"],
+        }),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn(),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "cari docs OpenClaw tentang gateway token",
+    });
+
+    expect(result?.domain).toBe("docs_kb");
+    expect(search).toHaveBeenCalledWith(
+      "cari OpenClaw tentang gateway token",
+      expect.objectContaining({
+        domain: "docs_kb",
+        sources: ["docs", "repo"],
+      }),
+    );
+    expect(result?.note).toContain("Domain: docs_kb");
+    expect(result?.note).toContain("Gateway token: shared auth");
+  });
+
+  it("routes transcript questions to history retrieval", async () => {
+    const search = vi.fn().mockResolvedValue([
+      {
+        path: "langchain/sessions/test.md",
+        startLine: 3,
+        endLine: 4,
+        score: 0.44,
+        snippet: "## user\nSaya suka DuckDB",
+        source: "sessions",
+        domain: "history",
+      },
+    ]);
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search,
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue({
+          backend: "plugin",
+          provider: "langchain",
+          model: "text-embedding-3-small",
+          sources: ["sessions"],
+        }),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn(),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "kemarin saya bilang apa tentang DuckDB?",
+    });
+
+    expect(result?.domain).toBe("history");
+    expect(search).toHaveBeenCalledWith(
+      "saya bilang apa tentang DuckDB?",
+      expect.objectContaining({
+        domain: "history",
+        sources: ["chat", "email", "sessions"],
+      }),
+    );
+    expect(result?.note).toContain("Domain: history");
   });
 
   it("returns unavailable context when backend is unavailable", async () => {

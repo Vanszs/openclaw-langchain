@@ -13,6 +13,7 @@ export const LANGCHAIN_VIRTUAL_ROOT = "langchain";
 
 export type LangchainMemorySource = "memory" | "sessions" | "repo" | "docs" | "chat" | "email";
 export type LangchainMemoryScope = "global" | "session" | "prefer_session";
+export type LangchainMemoryDomain = "user_memory" | "docs_kb" | "history";
 
 export type LangchainPluginConfig = {
   chromaUrl: string;
@@ -273,8 +274,17 @@ export function resolveLangchainAgentConfig(params: {
 export function resolveLangchainCollectionName(params: {
   collectionPrefix: string;
   agentId: string;
+  domain?: LangchainMemoryDomain;
 }): string {
-  const slug = `${params.collectionPrefix}-${params.agentId}`
+  const suffix =
+    params.domain === "user_memory"
+      ? "user-memory"
+      : params.domain === "docs_kb"
+        ? "docs-kb"
+        : params.domain === "history"
+          ? "history"
+          : "";
+  const slug = `${params.collectionPrefix}-${params.agentId}${suffix ? `-${suffix}` : ""}`
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");

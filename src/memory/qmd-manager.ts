@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { writeFileWithinRoot } from "../infra/fs-safe.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { inferDomainFromPath, isUserMemoryPath, resolveDomainSources } from "./domain.js";
 import { isFileMissingError, statRegularFile } from "./fs-utils.js";
 import { resolveCliSpawnInvocation, runCliCommand } from "./qmd-process.js";
 import { deriveQmdScopeChannel, deriveQmdScopeChatType, isQmdScopeAllowed } from "./qmd-scope.js";
@@ -17,6 +18,7 @@ import {
 } from "./session-files.js";
 import { requireNodeSqlite } from "./sqlite.js";
 import type {
+  MemoryDomain,
   MemoryEmbeddingProbeResult,
   MemoryProviderStatus,
   MemorySearchManager,
@@ -722,7 +724,13 @@ export class QmdMemoryManager implements MemorySearchManager {
 
   async search(
     query: string,
-    opts?: { maxResults?: number; minScore?: number; sessionKey?: string },
+    opts?: {
+      maxResults?: number;
+      minScore?: number;
+      sessionKey?: string;
+      sources?: MemorySource[];
+      domain?: MemoryDomain;
+    },
   ): Promise<MemorySearchResult[]> {
     if (!this.isScopeAllowed(opts?.sessionKey)) {
       this.logScopeDenied(opts?.sessionKey);
@@ -832,6 +840,14 @@ export class QmdMemoryManager implements MemorySearchManager {
       parsed = await runSearchAttempt(false);
     }
     const results: MemorySearchResult[] = [];
+    const requestedSources = new Set(
+      (opts?.sources?.length
+        ? opts.sources
+        : opts?.domain
+          ? resolveDomainSources(opts.domain)
+          : Array.from(this.sources)
+      ).filter((source) => this.sources.has(source)),
+    );
     for (const entry of parsed) {
       const docHints = this.normalizeDocHints({
         preferredCollection: entry.collection,
@@ -847,6 +863,18 @@ export class QmdMemoryManager implements MemorySearchManager {
       const minScore = opts?.minScore ?? 0;
       if (score < minScore) {
         continue;
+      }
+      if (!requestedSources.has(doc.source)) {
+        continue;
+      }
+      if (opts?.domain) {
+        const domain = inferDomainFromPath(doc.rel);
+        if (domain && domain !== opts.domain) {
+          continue;
+        }
+        if (!domain && opts.domain === "user_memory" && !isUserMemoryPath(doc.rel)) {
+          continue;
+        }
       }
       results.push({
         path: doc.rel,

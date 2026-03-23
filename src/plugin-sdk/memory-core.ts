@@ -19,6 +19,7 @@ export type {
   MemoryManagerProviderContext,
 } from "../memory/plugin-manager-registry.js";
 export type {
+  MemoryDomain,
   MemoryEmbeddingProbeResult,
   MemoryProviderStatus,
   MemorySearchManager,

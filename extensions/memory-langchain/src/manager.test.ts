@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { upsertUserMemoryFact } from "../../../src/memory/user-memory-store.js";
 
 const testState = vi.hoisted(() => ({
   pluginConfig: null as Record<string, unknown> | null,
@@ -43,8 +44,15 @@ vi.mock("./config.js", () => ({
   resolveLangchainPluginStorageState: vi.fn(() => testState.pluginConfig),
   resolveLangchainAgentConfig: vi.fn(() => testState.agentConfig),
   resolveLangchainCollectionName: vi.fn(
-    ({ collectionPrefix, agentId }: { collectionPrefix: string; agentId: string }) =>
-      `${collectionPrefix}-${agentId}`,
+    ({
+      collectionPrefix,
+      agentId,
+      domain,
+    }: {
+      collectionPrefix: string;
+      agentId: string;
+      domain?: string;
+    }) => `${collectionPrefix}-${agentId}${domain ? `-${domain}` : ""}`,
   ),
 }));
 
@@ -274,10 +282,13 @@ describe("LangchainMemoryManager", () => {
     expect(firstStatus.files).toBeGreaterThanOrEqual(3);
     expect(firstStatus.chunks).toBeGreaterThanOrEqual(3);
     expect(secondStatus.chunks).toBe(firstStatus.chunks);
-    expect(secondStatus.collectionName).toBe("openclaw-main");
+    expect(secondStatus.collectionName).toBe("openclaw-main-user_memory");
 
-    const collection = testState.collections.get("openclaw-main");
-    expect(collection?.size).toBe(firstStatus.chunks);
+    const totalChunksAcrossCollections = Array.from(testState.collections.values()).reduce(
+      (sum, collection) => sum + collection.size,
+      0,
+    );
+    expect(totalChunksAcrossCollections).toBe(firstStatus.chunks);
   });
 
   it("writes failure status when sync fails before indexing", async () => {
@@ -426,12 +437,13 @@ describe("LangchainMemoryManager", () => {
       sources: ["memory", "chat"],
     };
 
-    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
-    await fs.writeFile(
-      path.join(workspaceDir, "memory", "2026-03-23.md"),
-      "- preferensi pengguna: kopi tubruk\n- database favorit: DuckDB\n",
-      "utf-8",
-    );
+    await upsertUserMemoryFact({
+      workspaceDir,
+      namespace: "preferences",
+      key: "coffee.favorite",
+      value: "kopi tubruk",
+      provenance: { source: "test" },
+    });
     await fs.writeFile(
       path.join(pluginDir, "documents", "main", "chat", "chat-preferences.md"),
       "# Chat message\n\npreferensi apa yang anda ingat tentang saya?\n",
@@ -457,7 +469,7 @@ describe("LangchainMemoryManager", () => {
       maxResults: 5,
     });
     expect(results[0]?.source).toBe("memory");
-    expect(results[0]?.path).toBe("memory/2026-03-23.md");
+    expect(results[0]?.path).toContain("memory/facts/preferences/");
   });
 
   it("boosts exact durable memory marker matches ahead of generic vector hits", async () => {
@@ -466,21 +478,17 @@ describe("LangchainMemoryManager", () => {
       sources: ["memory", "chat"],
     };
 
+    await upsertUserMemoryFact({
+      workspaceDir,
+      namespace: "profile",
+      key: "note.test-profile",
+      value: "TEST_PROFILE_20260323 alergi alpukat editor favorit Helix kota favorit Kyoto",
+      provenance: { source: "test" },
+    });
     await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
     await fs.writeFile(
-      path.join(workspaceDir, "memory", "2026-03-23.md"),
-      [
-        "- TEST_PROFILE_20260323",
-        "  - alergi: alpukat",
-        "  - editor favorit: Helix",
-        "  - kota favorit: Kyoto",
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
-    await fs.writeFile(
       path.join(workspaceDir, "memory", "2026-03-22.md"),
-      "- Alergi udang\n- Database favorit: DuckDB\n",
+      "- Alergi udang\n",
       "utf-8",
     );
     await fs.writeFile(
@@ -508,8 +516,8 @@ describe("LangchainMemoryManager", () => {
     });
 
     expect(results[0]?.source).toBe("memory");
-    expect(results[0]?.path).toBe("memory/2026-03-23.md");
-    expect(results[0]?.startLine).toBe(1);
+    expect(results[0]?.path).toContain("memory/facts/profile/");
+    expect(results[0]?.startLine).toBeGreaterThanOrEqual(1);
     expect(results[0]?.snippet).toContain("TEST_PROFILE_20260323");
   });
 

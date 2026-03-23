@@ -1,6 +1,16 @@
 import { vi } from "vitest";
+import type { MemoryDomain, MemorySource } from "../../src/memory/types.js";
 
-export type SearchImpl = () => Promise<unknown[]>;
+export type SearchImpl = (
+  query?: string,
+  opts?: {
+    maxResults?: number;
+    minScore?: number;
+    sessionKey?: string;
+    sources?: MemorySource[];
+    domain?: MemoryDomain;
+  },
+) => Promise<unknown[]>;
 export type MemoryReadParams = { relPath: string; from?: number; lines?: number };
 export type MemoryReadResult = { text: string; path: string };
 type MemoryBackend = "builtin" | "qmd";
@@ -13,7 +23,9 @@ let readFileImpl: (params: MemoryReadParams) => Promise<MemoryReadResult> = asyn
 });
 
 const stubManager = {
-  search: vi.fn(async () => await searchImpl()),
+  search: vi.fn(
+    async (query?: string, opts?: Parameters<SearchImpl>[1]) => await searchImpl(query, opts),
+  ),
   readFile: vi.fn(async (params: MemoryReadParams) => await readFileImpl(params)),
   status: () => ({
     backend,
@@ -62,4 +74,12 @@ export function resetMemoryToolMockState(overrides?: {
     overrides?.readFileImpl ??
     (async (params: MemoryReadParams) => ({ text: "", path: params.relPath }));
   vi.clearAllMocks();
+}
+
+export function getMemorySearchMock() {
+  return stubManager.search;
+}
+
+export function getMemoryReadFileMock() {
+  return stubManager.readFile;
 }

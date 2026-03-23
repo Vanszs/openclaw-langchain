@@ -169,7 +169,13 @@ class FallbackMemoryManager implements MemorySearchManager {
 
   async search(
     query: string,
-    opts?: { maxResults?: number; minScore?: number; sessionKey?: string },
+    opts?: {
+      maxResults?: number;
+      minScore?: number;
+      sessionKey?: string;
+      sources?: import("./types.js").MemorySource[];
+      domain?: import("./types.js").MemoryDomain;
+    },
   ) {
     if (!this.primaryFailed) {
       try {

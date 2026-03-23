@@ -43,15 +43,30 @@ function buildMemorySection(params: {
   if (params.isMinimal) {
     return [];
   }
-  if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
+  const hasMemoryTools =
+    params.availableTools.has("memory_search") || params.availableTools.has("memory_get");
+  const hasKnowledgeTools =
+    params.availableTools.has("knowledge_search") || params.availableTools.has("knowledge_get");
+  const hasHistoryTools =
+    params.availableTools.has("history_search") || params.availableTools.has("history_get");
+  if (!hasMemoryTools && !hasKnowledgeTools && !hasHistoryTools) {
     return [];
   }
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, todos, or what is stored in memory/RAG/Chroma/the index: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
-    "Do not guess what the memory backend contains or whether Chroma/vector recall is connected. Run memory_search first.",
-    "For questions about memory/RAG/Chroma/the index, do not use exec/read/grep/glob/web_search as a substitute for memory_search. Use memory_search first, then use other tools only if the memory tool result explicitly points you there.",
-    "If memory_search or memory_get returns disabled/unavailable/error metadata, tell the user memory retrieval is unavailable right now and use the reported reason. Do not claim you inspected Chroma or the index unless a tool actually returned results or an explicit backend error.",
+    "Use the retrieval tool that matches the domain of the question.",
+    hasMemoryTools
+      ? "- user_memory facts about the user, preferences, remembered profile, or what is stored about the user in memory/RAG/Chroma/the index: run memory_search, then memory_get."
+      : "",
+    hasKnowledgeTools
+      ? "- docs_kb and saved external knowledge such as docs, references, repo knowledge, saved research, or saved documents: run knowledge_search, then knowledge_get."
+      : "",
+    hasHistoryTools
+      ? "- history about what was said earlier, prior turns, prior chats, or transcript recall: run history_search, then history_get."
+      : "",
+    "Do not guess what the retrieval backend contains or whether Chroma/vector recall is connected. Run the matching retrieval tool first.",
+    "Do not use exec/read/grep/glob/web_search as a substitute for memory_search, knowledge_search, or history_search. Use the retrieval tools first, then use other tools only if the retrieval result explicitly points you there.",
+    "If a retrieval tool returns disabled/unavailable/error metadata, tell the user retrieval is unavailable right now and use the reported reason. Do not claim you inspected Chroma or the index unless a tool actually returned results or an explicit backend error.",
   ];
   if (params.citationsMode === "off") {
     lines.push(

@@ -2,8 +2,14 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MemoryCitationsMode } from "../../config/types.memory.js";
 import { resolveMemoryBackendConfig } from "../../memory/backend-config.js";
+import {
+  inferDomainFromPath,
+  isHistoryPath,
+  isUserMemoryPath,
+  resolveDomainSources,
+} from "../../memory/domain.js";
 import { getMemorySearchManager } from "../../memory/index.js";
-import type { MemorySearchResult } from "../../memory/types.js";
+import type { MemoryDomain, MemorySearchResult } from "../../memory/types.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveMemorySearchConfig } from "../memory-search.js";
@@ -76,16 +82,111 @@ function createMemoryTool(params: {
   };
 }
 
-export function createMemorySearchTool(options: {
-  config?: OpenClawConfig;
-  agentSessionKey?: string;
-}): AnyAgentTool | null {
+type MemoryDomainToolConfig = {
+  label: string;
+  name: string;
+  domain: MemoryDomain;
+  searchDescription: string;
+  getDescription: string;
+  allowReadPath: (relPath: string) => boolean;
+};
+
+const USER_MEMORY_TOOL: MemoryDomainToolConfig = {
+  label: "Memory",
+  name: "memory",
+  domain: "user_memory",
+  searchDescription:
+    "Mandatory recall step for facts about the user: search canonical user_memory facts that were explicitly remembered about the user. Use this before answering what is stored about the user in memory/RAG/Chroma/the index. If disabled=true, user-memory retrieval is unavailable and that must be surfaced instead of guessing.",
+  getDescription:
+    "Safe snippet read for canonical user_memory facts after memory_search. Use this to inspect the exact stored fact lines while keeping context small.",
+  allowReadPath: (relPath) => isUserMemoryPath(relPath),
+};
+
+const KNOWLEDGE_TOOL: MemoryDomainToolConfig = {
+  label: "Knowledge",
+  name: "knowledge",
+  domain: "docs_kb",
+  searchDescription:
+    "Search saved knowledge documents, imported docs, saved research results, and indexed repo/docs references. Use this for documentation, manuals, references, repo knowledge, or saved external knowledge. If disabled=true, knowledge retrieval is unavailable and that must be surfaced instead of guessing.",
+  getDescription:
+    "Safe snippet read for docs_kb or repo/docs knowledge results after knowledge_search. Use this to inspect the exact retrieved document lines while keeping context small.",
+  allowReadPath: (relPath) => !isUserMemoryPath(relPath) && !isHistoryPath(relPath),
+};
+
+const HISTORY_TOOL: MemoryDomainToolConfig = {
+  label: "History",
+  name: "history",
+  domain: "history",
+  searchDescription:
+    "Search immutable prior conversation and session history. Use this for questions about what was said earlier, previous turns, prior chats, or transcript history. If disabled=true, history retrieval is unavailable and that must be surfaced instead of guessing.",
+  getDescription:
+    "Safe snippet read for transcript/history results after history_search. Use this to inspect the exact prior-message lines while keeping context small.",
+  allowReadPath: (relPath) => isHistoryPath(relPath),
+};
+
+function buildSearchToolName(config: MemoryDomainToolConfig): string {
+  return `${config.name}_search`;
+}
+
+function buildGetToolName(config: MemoryDomainToolConfig): string {
+  return `${config.name}_get`;
+}
+
+function buildUnavailableResult(params: {
+  error: string | undefined;
+  toolName: string;
+  subject: string;
+}) {
+  const reason =
+    (params.error ?? `${params.subject} unavailable`).trim() || `${params.subject} unavailable`;
+  const subjectLabel =
+    params.subject.length > 0
+      ? `${params.subject[0].toUpperCase()}${params.subject.slice(1)}`
+      : params.subject;
+  const isQuotaError = /insufficient_quota|quota|429/.test(reason.toLowerCase());
+  const isVectorBackendError =
+    /chroma|getorcreatecollection|vector backend|vector store|connectionerror|failed to connect|expected 'where'/i.test(
+      reason,
+    );
+  const warning = isQuotaError
+    ? `${subjectLabel} is unavailable because the embedding provider quota is exhausted.`
+    : isVectorBackendError
+      ? `${subjectLabel} is unavailable because the vector backend is unreachable.`
+      : `${subjectLabel} is unavailable due to an embedding/provider error.`;
+  const action = isQuotaError
+    ? `Top up or switch embedding provider, then retry ${params.toolName}.`
+    : isVectorBackendError
+      ? `Start or fix the Chroma/vector backend, then retry ${params.toolName}.`
+      : `Check embedding provider configuration and retry ${params.toolName}.`;
+  return {
+    results: [],
+    disabled: true,
+    unavailable: true,
+    error: reason,
+    warning,
+    action,
+  };
+}
+
+function decorateResultsForDomain(
+  results: MemorySearchResult[],
+  includeCitations: boolean,
+): MemorySearchResult[] {
+  return decorateCitations(results, includeCitations);
+}
+
+function createDomainSearchTool(
+  config: MemoryDomainToolConfig,
+  options: {
+    config?: OpenClawConfig;
+    agentSessionKey?: string;
+  },
+): AnyAgentTool | null {
   return createMemoryTool({
     options,
-    label: "Memory Search",
-    name: "memory_search",
-    description:
-      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, todos, or what is stored in memory/RAG/Chroma/the index; returns top snippets with path + lines. Use this instead of exec/read/grep/glob/web_search for memory-content questions. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user instead of guessing.",
+    label: `${config.label} Search`,
+    name: buildSearchToolName(config),
+    description: config.searchDescription,
     parameters: MemorySearchSchema,
     execute:
       ({ cfg, agentId }) =>
@@ -95,7 +196,13 @@ export function createMemorySearchTool(options: {
         const minScore = readNumberParam(params, "minScore");
         const memory = await getMemoryManagerContext({ cfg, agentId });
         if ("error" in memory) {
-          return jsonResult(buildMemorySearchUnavailableResult(memory.error));
+          return jsonResult(
+            buildUnavailableResult({
+              error: memory.error,
+              toolName: buildSearchToolName(config),
+              subject: `${config.label.toLowerCase()} search`,
+            }),
+          );
         }
         try {
           const citationsMode = resolveMemoryCitationsMode(cfg);
@@ -107,9 +214,11 @@ export function createMemorySearchTool(options: {
             maxResults,
             minScore,
             sessionKey: options.agentSessionKey,
+            domain: config.domain,
+            sources: resolveDomainSources(config.domain),
           });
           const status = memory.manager.status();
-          const decorated = decorateCitations(rawResults, includeCitations);
+          const decorated = decorateResultsForDomain(rawResults, includeCitations);
           const resolved = resolveMemoryBackendConfig({ cfg, agentId });
           const results =
             status.backend === "qmd"
@@ -123,25 +232,34 @@ export function createMemorySearchTool(options: {
             fallback: status.fallback,
             citations: citationsMode,
             mode: searchMode,
+            domain: config.domain,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          return jsonResult(buildMemorySearchUnavailableResult(message));
+          return jsonResult(
+            buildUnavailableResult({
+              error: message,
+              toolName: buildSearchToolName(config),
+              subject: `${config.label.toLowerCase()} search`,
+            }),
+          );
         }
       },
   });
 }
 
-export function createMemoryGetTool(options: {
-  config?: OpenClawConfig;
-  agentSessionKey?: string;
-}): AnyAgentTool | null {
+function createDomainGetTool(
+  config: MemoryDomainToolConfig,
+  options: {
+    config?: OpenClawConfig;
+    agentSessionKey?: string;
+  },
+): AnyAgentTool | null {
   return createMemoryTool({
     options,
-    label: "Memory Get",
-    name: "memory_get",
-    description:
-      "Safe snippet read from MEMORY.md or memory/*.md with optional from/lines; use after memory_search to pull only the needed lines and keep context small.",
+    label: `${config.label} Get`,
+    name: buildGetToolName(config),
+    description: config.getDescription,
     parameters: MemoryGetSchema,
     execute:
       ({ cfg, agentId }) =>
@@ -149,6 +267,16 @@ export function createMemoryGetTool(options: {
         const relPath = readStringParam(params, "path", { required: true });
         const from = readNumberParam(params, "from", { integer: true });
         const lines = readNumberParam(params, "lines", { integer: true });
+        if (!config.allowReadPath(relPath)) {
+          const inferredDomain = inferDomainFromPath(relPath);
+          const suffix = inferredDomain ? `(${inferredDomain})` : "";
+          return jsonResult({
+            path: relPath,
+            text: "",
+            disabled: true,
+            error: `${buildGetToolName(config)} only reads ${config.domain}${suffix ? `; rejected ${suffix}` : ""}`,
+          });
+        }
         const memory = await getMemoryManagerContext({ cfg, agentId });
         if ("error" in memory) {
           return jsonResult({ path: relPath, text: "", disabled: true, error: memory.error });
@@ -166,6 +294,48 @@ export function createMemoryGetTool(options: {
         }
       },
   });
+}
+
+export function createMemorySearchTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainSearchTool(USER_MEMORY_TOOL, options);
+}
+
+export function createMemoryGetTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainGetTool(USER_MEMORY_TOOL, options);
+}
+
+export function createKnowledgeSearchTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainSearchTool(KNOWLEDGE_TOOL, options);
+}
+
+export function createKnowledgeGetTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainGetTool(KNOWLEDGE_TOOL, options);
+}
+
+export function createHistorySearchTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainSearchTool(HISTORY_TOOL, options);
+}
+
+export function createHistoryGetTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  return createDomainGetTool(HISTORY_TOOL, options);
 }
 
 function resolveMemoryCitationsMode(cfg: OpenClawConfig): MemoryCitationsMode {
@@ -219,33 +389,6 @@ function clampResultsByInjectedChars(
     }
   }
   return clamped;
-}
-
-function buildMemorySearchUnavailableResult(error: string | undefined) {
-  const reason = (error ?? "memory search unavailable").trim() || "memory search unavailable";
-  const isQuotaError = /insufficient_quota|quota|429/.test(reason.toLowerCase());
-  const isVectorBackendError =
-    /chroma|getorcreatecollection|vector backend|vector store|connectionerror|failed to connect|expected 'where'/i.test(
-      reason,
-    );
-  const warning = isQuotaError
-    ? "Memory search is unavailable because the embedding provider quota is exhausted."
-    : isVectorBackendError
-      ? "Memory search is unavailable because the vector backend is unreachable."
-      : "Memory search is unavailable due to an embedding/provider error.";
-  const action = isQuotaError
-    ? "Top up or switch embedding provider, then retry memory_search."
-    : isVectorBackendError
-      ? "Start or fix the Chroma/vector backend, then retry memory_search."
-      : "Check embedding provider configuration and retry memory_search.";
-  return {
-    results: [],
-    disabled: true,
-    unavailable: true,
-    error: reason,
-    warning,
-    action,
-  };
 }
 
 function shouldIncludeCitations(params: {

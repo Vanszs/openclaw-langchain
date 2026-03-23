@@ -7,6 +7,7 @@ import type { ResolvedMemorySearchConfig } from "../agents/memory-search.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { inferDomainFromPath, isUserMemoryPath, resolveDomainSources } from "./domain.js";
 import {
   createEmbeddingProvider,
   type EmbeddingProvider,
@@ -24,6 +25,7 @@ import { MemoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
 import { searchKeyword, searchVector } from "./manager-search.js";
 import { extractKeywords } from "./query-expansion.js";
 import type {
+  MemoryDomain,
   MemoryEmbeddingProbeResult,
   MemoryProviderStatus,
   MemorySearchManager,
@@ -280,6 +282,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       maxResults?: number;
       minScore?: number;
       sessionKey?: string;
+      sources?: MemorySource[];
+      domain?: MemoryDomain;
     },
   ): Promise<MemorySearchResult[]> {
     void this.warmSession(opts?.sessionKey);
@@ -294,6 +298,31 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     }
     const minScore = opts?.minScore ?? this.settings.query.minScore;
     const maxResults = opts?.maxResults ?? this.settings.query.maxResults;
+    const requestedSources = new Set(
+      (opts?.sources?.length
+        ? opts.sources
+        : opts?.domain
+          ? resolveDomainSources(opts.domain)
+          : this.settings.sources
+      ).filter((source) => this.sources.has(source)),
+    );
+    const requestedDomain = opts?.domain;
+    const matchesRequest = (entry: MemorySearchResult) => {
+      if (!requestedSources.has(entry.source)) {
+        return false;
+      }
+      if (!requestedDomain) {
+        return true;
+      }
+      const inferred = inferDomainFromPath(entry.path);
+      if (inferred) {
+        return inferred === requestedDomain;
+      }
+      if (requestedDomain === "user_memory") {
+        return isUserMemoryPath(entry.path);
+      }
+      return requestedSources.has(entry.source);
+    };
     const hybrid = this.settings.query.hybrid;
     const candidates = Math.min(
       200,
@@ -330,6 +359,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
 
       const merged = [...seenIds.values()]
         .toSorted((a, b) => b.score - a.score)
+        .filter(matchesRequest)
         .filter((entry) => entry.score >= minScore)
         .slice(0, maxResults);
 
@@ -349,7 +379,10 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       : [];
 
     if (!hybrid.enabled || !this.fts.enabled || !this.fts.available) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      return vectorResults
+        .filter(matchesRequest)
+        .filter((entry) => entry.score >= minScore)
+        .slice(0, maxResults);
     }
 
     const merged = await this.mergeHybridResults({
@@ -360,7 +393,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       mmr: hybrid.mmr,
       temporalDecay: hybrid.temporalDecay,
     });
-    const strict = merged.filter((entry) => entry.score >= minScore);
+    const strict = merged.filter(matchesRequest).filter((entry) => entry.score >= minScore);
     if (strict.length > 0 || keywordResults.length === 0) {
       return strict.slice(0, maxResults);
     }
@@ -376,6 +409,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       ),
     );
     return merged
+      .filter(matchesRequest)
       .filter(
         (entry) =>
           keywordKeys.has(`${entry.source}:${entry.path}:${entry.startLine}:${entry.endLine}`) &&

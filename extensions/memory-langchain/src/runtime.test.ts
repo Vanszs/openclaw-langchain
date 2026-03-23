@@ -290,6 +290,33 @@ describe("LangchainMemoryRuntime", () => {
     expect(managerSyncMock).toHaveBeenCalledWith({ reason: "service" });
   });
 
+  it("dedupes repeated inbound body blocks before writing stored chat docs", async () => {
+    const runtime = createLangchainMemoryRuntime();
+
+    await runtime.enqueueInbound({
+      cfg,
+      channelId: "telegram",
+      accountId: "default",
+      conversationId: "chat-dedupe",
+      messageId: "msg-dedupe",
+      senderId: "user-dedupe",
+      content: "invoice ZX-4419",
+      body: "invoice ZX-4419",
+      bodyForAgent: "invoice ZX-4419",
+      attachmentText: "invoice ZX-4419",
+      transcript: "invoice ZX-4419",
+    });
+
+    await runtime.drainAndSync(cfg, path.join(tempDir, "workspace-main"));
+
+    const chatDocDir = path.join(pluginDir, "documents", "main", "chat");
+    const docFile = (await fs.readdir(chatDocDir)).find((entry) => entry.endsWith(".md"));
+    expect(docFile).toBeTruthy();
+    const content = await fs.readFile(path.join(chatDocDir, docFile!), "utf-8");
+    const matchCount = content.match(/invoice ZX-4419/g)?.length ?? 0;
+    expect(matchCount).toBe(1);
+  });
+
   it("serializes overlapping drainAndSync runs", async () => {
     const runtime = createLangchainMemoryRuntime();
     const releaseFirst = createDeferred();

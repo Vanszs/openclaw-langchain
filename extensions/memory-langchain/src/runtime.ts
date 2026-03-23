@@ -307,6 +307,23 @@ async function appendLogEvent(pathname: string, payload: Record<string, unknown>
 }
 
 function buildInboundDocBody(event: InboundQueueEvent): string {
+  const seenBlocks = new Set<string>();
+  const contentText = normalizeText(event.content);
+  if (contentText) {
+    seenBlocks.add(contentText.toLowerCase());
+  }
+  const pushBlock = (label: string, value: string | undefined) => {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return null;
+    }
+    const dedupeKey = normalized.toLowerCase();
+    if (seenBlocks.has(dedupeKey)) {
+      return null;
+    }
+    seenBlocks.add(dedupeKey);
+    return `\n## ${label}\n${normalized}`;
+  };
   const lines = [
     `# ${event.source === "email" ? "Email" : "Chat"} message`,
     event.sessionKey ? `Session: ${event.sessionKey}` : null,
@@ -337,11 +354,11 @@ function buildInboundDocBody(event: InboundQueueEvent): string {
       : null,
     "",
     "## Content",
-    event.content,
-    event.body ? `\n## Body\n${event.body}` : null,
-    event.bodyForAgent ? `\n## Body For Agent\n${event.bodyForAgent}` : null,
-    event.attachmentText ? `\n## Attachment Text\n${event.attachmentText}` : null,
-    event.transcript ? `\n## Transcript\n${event.transcript}` : null,
+    contentText,
+    pushBlock("Body", event.body),
+    pushBlock("Body For Agent", event.bodyForAgent),
+    pushBlock("Attachment Text", event.attachmentText),
+    pushBlock("Transcript", event.transcript),
   ].filter((entry): entry is string => Boolean(entry));
   return `${lines.join("\n")}\n`;
 }

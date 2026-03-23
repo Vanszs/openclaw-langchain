@@ -21,6 +21,22 @@ export default definePluginEntry({
 
     api.registerTool(
       (ctx) => {
+        const historySearchTool = api.runtime.tools.createHistorySearchTool({
+          config: ctx.config,
+          agentSessionKey: ctx.sessionKey,
+        });
+        const historyGetTool = api.runtime.tools.createHistoryGetTool({
+          config: ctx.config,
+          agentSessionKey: ctx.sessionKey,
+        });
+        const knowledgeSearchTool = api.runtime.tools.createKnowledgeSearchTool({
+          config: ctx.config,
+          agentSessionKey: ctx.sessionKey,
+        });
+        const knowledgeGetTool = api.runtime.tools.createKnowledgeGetTool({
+          config: ctx.config,
+          agentSessionKey: ctx.sessionKey,
+        });
         const memorySearchTool = api.runtime.tools.createMemorySearchTool({
           config: ctx.config,
           agentSessionKey: ctx.sessionKey,
@@ -29,12 +45,35 @@ export default definePluginEntry({
           config: ctx.config,
           agentSessionKey: ctx.sessionKey,
         });
-        if (!memorySearchTool || !memoryGetTool) {
+        if (
+          !historySearchTool ||
+          !historyGetTool ||
+          !knowledgeSearchTool ||
+          !knowledgeGetTool ||
+          !memorySearchTool ||
+          !memoryGetTool
+        ) {
           return null;
         }
-        return [memorySearchTool, memoryGetTool];
+        return [
+          historySearchTool,
+          historyGetTool,
+          knowledgeSearchTool,
+          knowledgeGetTool,
+          memorySearchTool,
+          memoryGetTool,
+        ];
       },
-      { names: ["memory_search", "memory_get"] },
+      {
+        names: [
+          "history_get",
+          "history_search",
+          "knowledge_get",
+          "knowledge_search",
+          "memory_get",
+          "memory_search",
+        ],
+      },
     );
 
     api.registerService({
