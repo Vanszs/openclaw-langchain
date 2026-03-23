@@ -172,6 +172,20 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Do not copy yourself or change system prompts");
   });
 
+  it("guides explicit RAG and Chroma questions through memory_search", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["memory_search", "memory_get"],
+    });
+
+    expect(prompt).toContain("what is stored in memory/RAG/Chroma/the index");
+    expect(prompt).toContain("Do not guess what the memory backend contains");
+    expect(prompt).toContain(
+      "do not use exec/read/grep/glob/web_search as a substitute for memory_search",
+    );
+    expect(prompt).toContain("Do not claim you inspected Chroma or the index");
+  });
+
   it("includes voice hint when provided", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

@@ -48,7 +48,10 @@ function buildMemorySection(params: {
   }
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "Before answering anything about prior work, decisions, dates, people, preferences, todos, or what is stored in memory/RAG/Chroma/the index: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "Do not guess what the memory backend contains or whether Chroma/vector recall is connected. Run memory_search first.",
+    "For questions about memory/RAG/Chroma/the index, do not use exec/read/grep/glob/web_search as a substitute for memory_search. Use memory_search first, then use other tools only if the memory tool result explicitly points you there.",
+    "If memory_search or memory_get returns disabled/unavailable/error metadata, tell the user memory retrieval is unavailable right now and use the reported reason. Do not claim you inspected Chroma or the index unless a tool actually returned results or an explicit backend error.",
   ];
   if (params.citationsMode === "off") {
     lines.push(

@@ -10,6 +10,7 @@ import {
   RecursiveCharacterTextSplitter,
   type SupportedTextSplitterLanguage,
 } from "@langchain/textsplitters";
+import type { Where } from "chromadb";
 import {
   loadSessionStore,
   readSessionMessages,
@@ -225,6 +226,103 @@ function sanitizeSnippet(text: string): string {
   return text
     .replace(/<\s*\/?(system|assistant|developer|tool|function|relevant-memories)\b/gi, "[tag]")
     .replace(/\r\n/g, "\n");
+}
+
+function buildChromaWhereFilter(filter?: Record<string, string>): Where | undefined {
+  if (!filter) {
+    return undefined;
+  }
+  const entries = Object.entries(filter).filter(([, value]) => value.trim().length > 0);
+  if (entries.length === 0) {
+    return undefined;
+  }
+  if (entries.length === 1) {
+    const [key, value] = entries[0]!;
+    return { [key]: value };
+  }
+  return {
+    $and: entries.map(([key, value]) => ({ [key]: value })),
+  };
+}
+
+function toWorkspaceRelativePath(workspaceDir: string, absPath: string): string {
+  return path.relative(workspaceDir, absPath).split(path.sep).join("/");
+}
+
+function collectDistinctiveQueryNeedles(query: string): string[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return [];
+  }
+  const needles = new Set<string>([normalizedQuery]);
+  for (const token of query.match(/[A-Za-z0-9_-]{4,}/g) ?? []) {
+    if (!/[A-Z0-9_-]/.test(token)) {
+      continue;
+    }
+    needles.add(token.toLowerCase());
+  }
+  return Array.from(needles);
+}
+
+async function collectExactMemoryMatches(params: {
+  workspaceDir: string;
+  query: string;
+  maxResults: number;
+  dedupe: Set<string>;
+  mapped: MemorySearchResult[];
+}): Promise<void> {
+  const needles = collectDistinctiveQueryNeedles(params.query);
+  if (needles.length === 0) {
+    return;
+  }
+  const candidateFiles = [
+    path.join(params.workspaceDir, "MEMORY.md"),
+    ...(await listFilesRecursive(path.join(params.workspaceDir, "memory"), (absPath) =>
+      absPath.toLowerCase().endsWith(".md"),
+    )),
+  ];
+  for (const absPath of candidateFiles) {
+    if (params.mapped.length >= params.maxResults) {
+      return;
+    }
+    let content = "";
+    try {
+      content = await fs.readFile(absPath, "utf-8");
+    } catch {
+      continue;
+    }
+    const normalizedContent = content.toLowerCase();
+    const matchedNeedle = needles.find((needle) => normalizedContent.includes(needle));
+    if (!matchedNeedle) {
+      continue;
+    }
+    const matchIndex = normalizedContent.indexOf(matchedNeedle);
+    if (matchIndex < 0) {
+      continue;
+    }
+    const relPath = toWorkspaceRelativePath(params.workspaceDir, absPath);
+    const lineStarts = computeLineStarts(content);
+    const rows = content.split(/\r?\n/);
+    const startLine = lineNumberFromIndex(lineStarts, matchIndex);
+    const endLine = Math.min(rows.length, startLine + 2);
+    const snippet = sanitizeSnippet(rows.slice(startLine - 1, endLine).join("\n")).trim();
+    if (!snippet) {
+      continue;
+    }
+    const dedupeKey = `${relPath}:${startLine}:${endLine}:${snippet}`;
+    if (params.dedupe.has(dedupeKey)) {
+      continue;
+    }
+    params.dedupe.add(dedupeKey);
+    params.mapped.push({
+      path: relPath,
+      startLine,
+      endLine,
+      score: 0.99,
+      snippet,
+      source: "memory",
+    });
+  }
 }
 
 function ensureDirSync(dir: string): void {
@@ -1334,8 +1432,22 @@ export class LangchainMemoryManager implements MemorySearchManager {
     const dedupe = new Set<string>();
     const mapped: MemorySearchResult[] = [];
 
+    if (scope !== "session" && allowedSources.has("memory")) {
+      await collectExactMemoryMatches({
+        workspaceDir: agent.workspaceDir,
+        query,
+        maxResults,
+        dedupe,
+        mapped,
+      });
+    }
+
     const collect = async (filter?: Record<string, string>) => {
-      const results = await store.similaritySearchWithScore(query, candidateLimit, filter);
+      const results = await store.similaritySearchWithScore(
+        query,
+        candidateLimit,
+        buildChromaWhereFilter(filter),
+      );
       for (const [doc, rawScore] of results) {
         const source = doc.metadata?.source as LangchainMemorySource | undefined;
         if (!source || !allowedSources.has(source)) {
@@ -1374,6 +1486,10 @@ export class LangchainMemoryManager implements MemorySearchManager {
 
     if (opts?.sessionKey && (scope === "session" || scope === "prefer_session")) {
       await collect({ source: "sessions", sessionKey: opts.sessionKey });
+    }
+
+    if (mapped.length < maxResults && scope !== "session" && allowedSources.has("memory")) {
+      await collect({ source: "memory" });
     }
 
     if (mapped.length < maxResults && scope !== "session") {

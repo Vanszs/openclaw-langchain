@@ -85,7 +85,7 @@ export function createMemorySearchTool(options: {
     label: "Memory Search",
     name: "memory_search",
     description:
-      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, or todos; returns top snippets with path + lines. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user.",
+      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, todos, or what is stored in memory/RAG/Chroma/the index; returns top snippets with path + lines. Use this instead of exec/read/grep/glob/web_search for memory-content questions. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user instead of guessing.",
     parameters: MemorySearchSchema,
     execute:
       ({ cfg, agentId }) =>
@@ -224,12 +224,20 @@ function clampResultsByInjectedChars(
 function buildMemorySearchUnavailableResult(error: string | undefined) {
   const reason = (error ?? "memory search unavailable").trim() || "memory search unavailable";
   const isQuotaError = /insufficient_quota|quota|429/.test(reason.toLowerCase());
+  const isVectorBackendError =
+    /chroma|getorcreatecollection|vector backend|vector store|connectionerror|failed to connect|expected 'where'/i.test(
+      reason,
+    );
   const warning = isQuotaError
     ? "Memory search is unavailable because the embedding provider quota is exhausted."
-    : "Memory search is unavailable due to an embedding/provider error.";
+    : isVectorBackendError
+      ? "Memory search is unavailable because the vector backend is unreachable."
+      : "Memory search is unavailable due to an embedding/provider error.";
   const action = isQuotaError
     ? "Top up or switch embedding provider, then retry memory_search."
-    : "Check embedding provider configuration and retry memory_search.";
+    : isVectorBackendError
+      ? "Start or fix the Chroma/vector backend, then retry memory_search."
+      : "Check embedding provider configuration and retry memory_search.";
   return {
     results: [],
     disabled: true,

@@ -40,4 +40,21 @@ describe("memory_search unavailable payloads", () => {
       action: "Check embedding provider configuration and retry memory_search.",
     });
   });
+
+  it("returns explicit unavailable metadata for vector backend failures", async () => {
+    setMemorySearchImpl(async () => {
+      throw new Error(
+        "Chroma getOrCreateCollection error: ChromaConnectionError: Failed to connect to chromadb",
+      );
+    });
+
+    const tool = createMemorySearchToolOrThrow();
+    const result = await tool.execute("chroma", { query: "hello" });
+    expectUnavailableMemorySearchDetails(result.details, {
+      error:
+        "Chroma getOrCreateCollection error: ChromaConnectionError: Failed to connect to chromadb",
+      warning: "Memory search is unavailable because the vector backend is unreachable.",
+      action: "Start or fix the Chroma/vector backend, then retry memory_search.",
+    });
+  });
 });

@@ -126,17 +126,32 @@ vi.mock("@langchain/community/vectorstores/chroma", () => ({
       }
     }
 
-    async similaritySearchWithScore(query: string, limit: number, filter?: Record<string, string>) {
+    async similaritySearchWithScore(
+      query: string,
+      limit: number,
+      filter?: Record<string, string | Array<Record<string, string>>>,
+    ) {
       const collection = testState.collections.get(this.collectionName)!;
-      const rows = Array.from(collection.values())
-        .filter((entry) => {
-          if (!filter) {
+      const matchesFilter = (
+        metadata: Record<string, unknown>,
+        nextFilter?: Record<string, string | Array<Record<string, string>>>,
+      ) => {
+        if (!nextFilter) {
+          return true;
+        }
+        const andFilters = Array.isArray(nextFilter.$and) ? nextFilter.$and : undefined;
+        if (andFilters) {
+          return andFilters.every((entry) => matchesFilter(metadata, entry));
+        }
+        return Object.entries(nextFilter).every(([key, value]) => {
+          if (key === "$and") {
             return true;
           }
-          return Object.entries(filter).every(
-            ([key, value]) => String(entry.metadata[key] ?? "") === value,
-          );
-        })
+          return String(metadata[key] ?? "") === String(value ?? "");
+        });
+      };
+      const rows = Array.from(collection.values())
+        .filter((entry) => matchesFilter(entry.metadata, filter))
         .map(
           (entry) =>
             [
@@ -403,6 +418,99 @@ describe("LangchainMemoryManager", () => {
     });
     expect(chatOnly).toHaveLength(1);
     expect(chatOnly[0]?.source).toBe("chat");
+  });
+
+  it("prefers durable memory documents before generic chat matches", async () => {
+    testState.agentConfig = {
+      ...testState.agentConfig,
+      sources: ["memory", "chat"],
+    };
+
+    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "memory", "2026-03-23.md"),
+      "- preferensi pengguna: kopi tubruk\n- database favorit: DuckDB\n",
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "documents", "main", "chat", "chat-preferences.md"),
+      "# Chat message\n\npreferensi apa yang anda ingat tentang saya?\n",
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "documents", "main", "chat", "chat-preferences.json"),
+      JSON.stringify({
+        source: "chat",
+        path: "langchain/chat/chat-preferences.md",
+        title: "chat-preferences",
+        conversationId: "wa-pref",
+      }),
+      "utf-8",
+    );
+
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    await manager.sync({ reason: "cli" });
+
+    const results = await manager.search("preferensi", {
+      sources: ["memory", "chat"],
+      scope: "global",
+      maxResults: 5,
+    });
+    expect(results[0]?.source).toBe("memory");
+    expect(results[0]?.path).toBe("memory/2026-03-23.md");
+  });
+
+  it("boosts exact durable memory marker matches ahead of generic vector hits", async () => {
+    testState.agentConfig = {
+      ...testState.agentConfig,
+      sources: ["memory", "chat"],
+    };
+
+    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "memory", "2026-03-23.md"),
+      [
+        "- TEST_PROFILE_20260323",
+        "  - alergi: alpukat",
+        "  - editor favorit: Helix",
+        "  - kota favorit: Kyoto",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(workspaceDir, "memory", "2026-03-22.md"),
+      "- Alergi udang\n- Database favorit: DuckDB\n",
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "documents", "main", "chat", "test.md"),
+      "# Chat message\n\napa yang anda ingat tentang TEST_PROFILE_20260323?\n",
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "documents", "main", "chat", "test.json"),
+      JSON.stringify({
+        source: "chat",
+        path: "langchain/chat/test.md",
+        title: "test",
+        conversationId: "test-profile",
+      }),
+      "utf-8",
+    );
+
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    await manager.sync({ reason: "cli" });
+
+    const results = await manager.search("TEST_PROFILE_20260323", {
+      maxResults: 5,
+      minScore: 0.3,
+    });
+
+    expect(results[0]?.source).toBe("memory");
+    expect(results[0]?.path).toBe("memory/2026-03-23.md");
+    expect(results[0]?.startLine).toBe(1);
+    expect(results[0]?.snippet).toContain("TEST_PROFILE_20260323");
   });
 
   it("falls back to transcript jsonl files when canonical session docs are missing", async () => {
