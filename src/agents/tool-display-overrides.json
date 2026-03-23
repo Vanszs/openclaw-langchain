@@ -82,6 +82,26 @@
       "title": "Memory Get",
       "detailKeys": ["path", "from", "lines"]
     },
+    "knowledge_search": {
+      "emoji": "📚",
+      "title": "Knowledge Search",
+      "detailKeys": ["query"]
+    },
+    "knowledge_get": {
+      "emoji": "📖",
+      "title": "Knowledge Get",
+      "detailKeys": ["path", "from", "lines"]
+    },
+    "history_search": {
+      "emoji": "🕘",
+      "title": "History Search",
+      "detailKeys": ["query"]
+    },
+    "history_get": {
+      "emoji": "🧾",
+      "title": "History Get",
+      "detailKeys": ["path", "from", "lines"]
+    },
     "web_search": {
       "emoji": "🔎",
       "title": "Web Search",

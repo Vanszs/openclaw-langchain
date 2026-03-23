@@ -8,5 +8,8 @@ describe("tool-catalog", () => {
     expect(policy!.allow).toContain("web_search");
     expect(policy!.allow).toContain("web_fetch");
     expect(policy!.allow).toContain("image_generate");
+    expect(policy!.allow).toContain("memory_search");
+    expect(policy!.allow).toContain("knowledge_search");
+    expect(policy!.allow).toContain("history_search");
   });
 });

@@ -131,6 +131,10 @@ describe("resolveSubagentToolPolicy depth awareness", () => {
     expect(isToolAllowedByPolicyName("cron", policy)).toBe(false);
     expect(isToolAllowedByPolicyName("memory_search", policy)).toBe(false);
     expect(isToolAllowedByPolicyName("memory_get", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("knowledge_search", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("knowledge_get", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("history_search", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("history_get", policy)).toBe(false);
   });
 
   it("depth-2 leaf denies sessions_spawn", () => {

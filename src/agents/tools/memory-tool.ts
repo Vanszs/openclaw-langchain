@@ -141,7 +141,7 @@ function buildUnavailableResult(params: {
     (params.error ?? `${params.subject} unavailable`).trim() || `${params.subject} unavailable`;
   const subjectLabel =
     params.subject.length > 0
-      ? `${params.subject[0].toUpperCase()}${params.subject.slice(1)}`
+      ? `${params.subject.charAt(0).toUpperCase()}${params.subject.slice(1)}`
       : params.subject;
   const isQuotaError = /insufficient_quota|quota|429/.test(reason.toLowerCase());
   const isVectorBackendError =
