@@ -2429,7 +2429,7 @@ See [Local Models](/gateway/local-models). TL;DR: run MiniMax M2.5 via LM Studio
 - Enabled Claude bundle plugins can also contribute embedded Pi defaults from `settings.json`; OpenClaw applies those as sanitized agent settings, not as raw OpenClaw config patches.
 - `plugins.slots.memory`: pick the active memory plugin id, or `"none"` to disable memory plugins.
 - `plugins.entries.memory-langchain.config`: LangChain + Chroma memory backend settings when `plugins.slots.memory = "memory-langchain"`.
-  - `chromaUrl`: Chroma HTTP endpoint.
+  - `chromaUrl`: Chroma HTTP endpoint. If unset during onboarding/config prompts, OpenClaw preserves the existing configured value, otherwise falls back to `OPENCLAW_CHROMA_URL`, then `http://127.0.0.1:8000`.
   - `collectionPrefix`: collection name prefix for agent-scoped indexes.
   - `embeddingProvider`: `memory-langchain` embedding provider id (`openai` or `openrouter`).
   - `embeddingModel`: embedding model id such as `text-embedding-3-small`.

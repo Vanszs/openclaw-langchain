@@ -711,6 +711,10 @@ terms before depending on subscription auth.
 This keeps OpenClaw as the gateway and orchestration layer, while
 `memory-langchain` handles chunking, embeddings, Chroma storage, and retrieval.
 
+If you want to pin a non-default Chroma endpoint without hardcoding it into `openclaw.json`, set
+`OPENCLAW_CHROMA_URL` in `.env` or `~/.openclaw/.env` and use that value during onboarding or
+memory configuration prompts.
+
 ## Tips
 
 - If you set `dmPolicy: "open"`, the matching `allowFrom` list must include `"*"`.

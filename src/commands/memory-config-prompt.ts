@@ -158,6 +158,7 @@ export async function promptMemoryConfig(
     [
       "The remaining prompts configure the LangChain backend itself.",
       "These settings control embeddings, Chroma storage, and collection naming.",
+      "If Chroma URL is already configured, or OPENCLAW_CHROMA_URL is set, the prompt is prefilled from that value so you can preserve the current endpoint.",
     ].join("\n"),
     "LangChain Backend",
   );

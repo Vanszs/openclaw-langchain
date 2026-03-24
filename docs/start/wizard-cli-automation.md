@@ -48,6 +48,22 @@ openclaw onboard --non-interactive \
   --accept-risk
 ```
 
+LangChain + Chroma memory example with an env-pinned endpoint:
+
+```bash
+export OPENCLAW_CHROMA_URL="http://127.0.0.1:8889"
+openclaw onboard --non-interactive \
+  --mode local \
+  --auth-choice skip \
+  --memory-backend memory-langchain \
+  --memory-embedding-provider openai \
+  --memory-embedding-model text-embedding-3-small \
+  --accept-risk
+```
+
+`--memory-chroma-url` is optional in that flow. If omitted, onboarding preserves the existing
+configured `chromaUrl` when one exists; otherwise it uses `OPENCLAW_CHROMA_URL`.
+
 ## Provider-specific examples
 
 <AccordionGroup>

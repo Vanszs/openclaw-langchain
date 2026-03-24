@@ -135,7 +135,10 @@ export function registerOnboardCommand(program: Command) {
     .option("--skip-skills", "Skip skills setup")
     .option("--skip-search", "Skip search provider setup")
     .option("--memory-backend <id>", "Memory backend: memory-core|memory-langchain|none")
-    .option("--memory-chroma-url <url>", "Chroma URL for memory-langchain")
+    .option(
+      "--memory-chroma-url <url>",
+      "Optional Chroma URL for memory-langchain (otherwise uses existing config or OPENCLAW_CHROMA_URL)",
+    )
     .option("--memory-collection-prefix <prefix>", "Collection prefix for memory-langchain")
     .option(
       "--memory-embedding-provider <id>",

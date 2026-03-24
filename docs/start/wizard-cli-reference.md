@@ -24,6 +24,11 @@ Local mode (default) walks you through:
 - Health check
 - Skills setup
 
+For LangChain + Chroma memory, the interactive Chroma URL prompt is prefilled from the existing
+configured `chromaUrl` when present. If no config value exists, onboarding falls back to
+`OPENCLAW_CHROMA_URL`, then `http://127.0.0.1:8000`. In non-interactive mode,
+`--memory-chroma-url` is optional when that env var is already set.
+
 Remote mode configures this machine to connect to a gateway elsewhere.
 It does not install or modify anything on the remote host.
 

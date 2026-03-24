@@ -5,7 +5,7 @@
     "chromaUrl": {
       "label": "Chroma URL",
       "placeholder": "http://127.0.0.1:8000",
-      "help": "HTTP endpoint for the Chroma server"
+      "help": "HTTP endpoint for the Chroma server. If omitted, onboarding and prompt flows can fall back to OPENCLAW_CHROMA_URL or the built-in default."
     },
     "collectionPrefix": {
       "label": "Collection Prefix",

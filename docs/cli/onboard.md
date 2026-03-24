@@ -55,6 +55,21 @@ openclaw onboard --non-interactive \
 
 `--custom-base-url` defaults to `http://127.0.0.1:11434`. `--custom-model-id` is optional; if omitted, onboarding uses Ollama's suggested defaults. Cloud model IDs such as `kimi-k2.5:cloud` also work here.
 
+Non-interactive LangChain + Chroma memory can also inherit its endpoint from the environment:
+
+```bash
+export OPENCLAW_CHROMA_URL="http://127.0.0.1:8889"
+openclaw onboard --non-interactive \
+  --mode local \
+  --auth-choice skip \
+  --memory-backend memory-langchain \
+  --memory-embedding-provider openai \
+  --accept-risk
+```
+
+In that flow, `--memory-chroma-url` is optional. If omitted, onboarding preserves the existing
+configured `chromaUrl` when one exists; otherwise it falls back to `OPENCLAW_CHROMA_URL`.
+
 Store provider keys as refs instead of plaintext:
 
 ```bash
