@@ -3,6 +3,10 @@ import type { OpenClawConfig } from "../config/types.js";
 import { buildGatewayConnectionDetails } from "../gateway/call.js";
 import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
 import { probeGateway } from "../gateway/probe.js";
+import {
+  getLiveVectorProbeStatus,
+  mergeLiveVectorProbeIntoStatus,
+} from "../memory/status-probe.js";
 import type { MemoryProviderStatus } from "../memory/types.js";
 import {
   pickGatewaySelfPresence,
@@ -114,6 +118,9 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
   }) => Promise<{
     manager: {
       probeVectorAvailability(): Promise<boolean>;
+      probeVectorStatus?: (params?: {
+        domains?: import("../memory/types.js").MemoryDomain[];
+      }) => Promise<import("../memory/types.js").MemoryVectorProbeStatus>;
       status(): MemoryProviderStatus;
       close?(): Promise<void>;
     } | null;
@@ -149,7 +156,13 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
     return null;
   }
   try {
-    await manager.probeVectorAvailability();
+    const probe = await getLiveVectorProbeStatus({ manager });
+    const status = mergeLiveVectorProbeIntoStatus({
+      status: manager.status(),
+      probe,
+    });
+    await manager.close?.().catch(() => {});
+    return { agentId, ...status };
   } catch {}
   const status = manager.status();
   await manager.close?.().catch(() => {});

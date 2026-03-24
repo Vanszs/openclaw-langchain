@@ -26,6 +26,10 @@ describe("memory recall deterministic routing", () => {
   });
 
   it("matches explicit memory/RAG recall questions", () => {
+    expect(shouldInjectDeterministicMemoryRecall("cek chroma db")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("is memory working")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("who am i?")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("apa yang kamu tahu tentang aku?")).toBe(true);
     expect(
       shouldInjectDeterministicMemoryRecall(
         "informasi apa yg anda punya di rag chroma db tentang saya?",
@@ -44,10 +48,15 @@ describe("memory recall deterministic routing", () => {
     );
   });
 
-  it("does not match memory save requests", () => {
+  it("does not match memory save requests or generic system phrasing", () => {
     expect(
       shouldInjectDeterministicMemoryRecall("simpan informasi yang menurut anda penting di rag"),
     ).toBe(false);
+    expect(shouldInjectDeterministicMemoryRecall("why is memory usage high?")).toBe(false);
+    expect(shouldInjectDeterministicMemoryRecall("how do I create an index in sqlite?")).toBe(
+      false,
+    );
+    expect(shouldInjectDeterministicMemoryRecall("show the previous error")).toBe(false);
   });
 
   it("returns retrieved user_memory snippets when search succeeds", async () => {
@@ -131,7 +140,7 @@ describe("memory recall deterministic routing", () => {
 
     expect(result?.domain).toBe("docs_kb");
     expect(search).toHaveBeenCalledWith(
-      "cari OpenClaw tentang gateway token",
+      "cari docs OpenClaw tentang gateway token",
       expect.objectContaining({
         domain: "docs_kb",
         sources: ["docs", "repo"],
@@ -185,6 +194,129 @@ describe("memory recall deterministic routing", () => {
       }),
     );
     expect(result?.note).toContain("Domain: history");
+  });
+
+  it("returns live backend status for chroma health questions", async () => {
+    const status = {
+      backend: "plugin",
+      provider: "langchain",
+      model: "text-embedding-3-small",
+      dbPath: "http://127.0.0.1:8889",
+      vector: { enabled: true, available: false },
+      custom: {
+        collectionName: "openclaw-main-user-memory",
+        backendError: "stale cached error",
+      },
+    };
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search: vi.fn(),
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue(status),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn().mockResolvedValue(true),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "cek chroma db",
+    });
+
+    expect(result?.note).toContain("Deterministic route: memory-backend-status");
+    expect(result?.note).toContain("Retrieval status: backend-ready");
+    expect(result?.note).toContain("Vector probe: ok");
+    expect(result?.note).toContain("Store: http://127.0.0.1:8889");
+    expect(result?.note).not.toContain("stale cached error");
+    expect(result?.systemPromptHint).toContain(
+      "Deterministic memory backend status probing already ran",
+    );
+  });
+
+  it("reports per-domain partial backend health when one collection probe fails", async () => {
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search: vi.fn(),
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue({
+          backend: "plugin",
+          provider: "langchain",
+          model: "text-embedding-3-small",
+          dbPath: "http://127.0.0.1:8889",
+          vector: { enabled: true, available: false },
+        }),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn().mockResolvedValue(false),
+        probeVectorStatus: vi.fn().mockResolvedValue({
+          available: false,
+          error: "history collection unavailable",
+          domains: {
+            user_memory: {
+              domain: "user_memory",
+              available: true,
+              collection: "openclaw-main-user-memory",
+            },
+            docs_kb: {
+              domain: "docs_kb",
+              available: true,
+              collection: "openclaw-main-docs-kb",
+            },
+            history: {
+              domain: "history",
+              available: false,
+              collection: "openclaw-main-history",
+              error: "history collection unavailable",
+            },
+          },
+        }),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "status chroma db",
+    });
+
+    expect(result?.note).toContain("Retrieval status: backend-partial");
+    expect(result?.note).toContain("Vector probe: partial");
+    expect(result?.note).toContain("- history: failed | collection=openclaw-main-history");
+    expect(result?.note).toContain("Backend error: history collection unavailable");
+  });
+
+  it("reports backend-unavailable when the live vector probe fails", async () => {
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search: vi.fn(),
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue({
+          backend: "plugin",
+          provider: "langchain",
+          model: "text-embedding-3-small",
+          dbPath: "http://127.0.0.1:8889",
+          vector: { enabled: true, available: false },
+        }),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "status chroma db",
+    });
+
+    expect(result?.note).toContain("Retrieval status: backend-unavailable");
+    expect(result?.note).toContain("Vector probe: failed");
+    expect(result?.note).toContain("Backend error: connect ECONNREFUSED");
   });
 
   it("returns unavailable context when backend is unavailable", async () => {

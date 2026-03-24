@@ -21,11 +21,13 @@ import {
 } from "openclaw/plugin-sdk/config-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/core";
 import type {
+  MemoryDomain,
   MemoryEmbeddingProbeResult,
   MemoryProviderStatus,
   MemorySearchManager,
   MemorySearchResult,
   MemorySyncProgressUpdate,
+  MemoryVectorProbeStatus,
 } from "openclaw/plugin-sdk/memory-core";
 import {
   LANGCHAIN_VIRTUAL_ROOT,
@@ -1301,6 +1303,21 @@ export class LangchainMemoryManager implements MemorySearchManager {
     return { store, collectionName };
   }
 
+  private resolveDomainCollections(
+    plugin: Pick<LangchainPluginConfig, "collectionPrefix">,
+  ): Partial<Record<LangchainMemoryDomain, string>> {
+    return Object.fromEntries(
+      DOMAIN_ORDER.map((domain) => [
+        domain,
+        resolveLangchainCollectionName({
+          collectionPrefix: plugin.collectionPrefix,
+          agentId: this.agentId,
+          domain,
+        }),
+      ]),
+    ) as Partial<Record<LangchainMemoryDomain, string>>;
+  }
+
   private readStatusFile(
     plugin: { statusPath: string },
     agent: LangchainAgentConfig,
@@ -1384,7 +1401,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
         agentId: agent.agentId,
         domain: "user_memory",
       });
-    const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
+    const queueDepth = readPendingQueueDepth(plugin.pendingDir);
     const failedQueueDepth = readFailedQueueDepth(plugin.queueDir);
     const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
     const staleIndex =
@@ -1413,18 +1430,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
         pluginId: "memory-langchain",
         chromaUrl: plugin.chromaUrl,
         collectionName,
-        collections:
-          statusFile?.collections ??
-          Object.fromEntries(
-            DOMAIN_ORDER.map((domain) => [
-              domain,
-              resolveLangchainCollectionName({
-                collectionPrefix: plugin.collectionPrefix,
-                agentId: agent.agentId,
-                domain,
-              }),
-            ]),
-          ),
+        collections: statusFile?.collections ?? this.resolveDomainCollections(plugin),
         queueDepth,
         failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
@@ -1440,7 +1446,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
   async buildStatus(): Promise<MemoryProviderStatus> {
     const { plugin, agent } = await this.resolveRuntime();
     const statusFile = this.readStatusFile(plugin, agent);
-    const queueDepth = statusFile?.queueDepth ?? readPendingQueueDepth(plugin.pendingDir);
+    const queueDepth = readPendingQueueDepth(plugin.pendingDir);
     const failedQueueDepth = readFailedQueueDepth(plugin.queueDir);
     const staleThresholdMs = Math.max(1, plugin.syncIntervalSec) * 2000;
     const staleIndex =
@@ -1474,18 +1480,7 @@ export class LangchainMemoryManager implements MemorySearchManager {
             agentId: agent.agentId,
             domain: "user_memory",
           }),
-        collections:
-          statusFile?.collections ??
-          Object.fromEntries(
-            DOMAIN_ORDER.map((domain) => [
-              domain,
-              resolveLangchainCollectionName({
-                collectionPrefix: plugin.collectionPrefix,
-                agentId: agent.agentId,
-                domain,
-              }),
-            ]),
-          ),
+        collections: statusFile?.collections ?? this.resolveDomainCollections(plugin),
         queueDepth,
         failedQueueDepth,
         lastSyncAt: statusFile?.lastSyncAt,
@@ -1511,14 +1506,68 @@ export class LangchainMemoryManager implements MemorySearchManager {
     }
   }
 
-  async probeVectorAvailability(): Promise<boolean> {
+  async probeVectorStatus(params?: { domains?: MemoryDomain[] }): Promise<MemoryVectorProbeStatus> {
+    const requestedDomains =
+      params?.domains?.filter((domain): domain is LangchainMemoryDomain =>
+        DOMAIN_ORDER.includes(domain as LangchainMemoryDomain),
+      ) ?? DOMAIN_ORDER;
+    const domains = requestedDomains.length > 0 ? requestedDomains : DOMAIN_ORDER;
     try {
       const { plugin } = await this.resolveRuntime();
-      await this.getVectorStoreForDomain(plugin, "user_memory");
-      return true;
-    } catch {
-      return false;
+      const domainResults: NonNullable<MemoryVectorProbeStatus["domains"]> = {};
+      let firstError: string | undefined;
+      let allAvailable = true;
+      for (const domain of domains) {
+        const collection = resolveLangchainCollectionName({
+          collectionPrefix: plugin.collectionPrefix,
+          agentId: this.agentId,
+          domain,
+        });
+        try {
+          await this.getVectorStoreForDomain(plugin, domain);
+          domainResults[domain] = {
+            domain,
+            available: true,
+            collection,
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          allAvailable = false;
+          firstError ??= message;
+          domainResults[domain] = {
+            domain,
+            available: false,
+            collection,
+            error: message,
+          };
+        }
+      }
+      return {
+        available: allAvailable,
+        ...(firstError ? { error: firstError } : {}),
+        domains: domainResults,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        available: false,
+        error: message,
+        domains: Object.fromEntries(
+          domains.map((domain) => [
+            domain,
+            {
+              domain,
+              available: false,
+            },
+          ]),
+        ) as NonNullable<MemoryVectorProbeStatus["domains"]>,
+      };
     }
+  }
+
+  async probeVectorAvailability(): Promise<boolean> {
+    const probe = await this.probeVectorStatus({ domains: DOMAIN_ORDER });
+    return probe.available;
   }
 
   async sync(params?: {

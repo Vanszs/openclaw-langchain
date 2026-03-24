@@ -9,6 +9,7 @@ import type {
   MemoryEmbeddingProbeResult,
   MemorySearchManager,
   MemorySyncProgressUpdate,
+  MemoryVectorProbeStatus,
 } from "./types.js";
 
 const MEMORY_SEARCH_MANAGER_CACHE_KEY = "__openclawMemorySearchManagerCache";
@@ -267,6 +268,23 @@ class FallbackMemoryManager implements MemorySearchManager {
     }
     const fallback = await this.ensureFallback();
     return (await fallback?.probeVectorAvailability()) ?? false;
+  }
+
+  async probeVectorStatus(params?: {
+    domains?: import("./types.js").MemoryDomain[];
+  }): Promise<MemoryVectorProbeStatus> {
+    if (!this.primaryFailed) {
+      if (typeof this.deps.primary.probeVectorStatus === "function") {
+        return await this.deps.primary.probeVectorStatus(params);
+      }
+      const available = await this.deps.primary.probeVectorAvailability();
+      return { available };
+    }
+    const fallback = await this.ensureFallback();
+    if (fallback && typeof fallback.probeVectorStatus === "function") {
+      return await fallback.probeVectorStatus(params);
+    }
+    return { available: (await fallback?.probeVectorAvailability()) ?? false };
   }
 
   async close() {

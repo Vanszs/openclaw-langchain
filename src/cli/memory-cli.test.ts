@@ -211,6 +211,45 @@ describe("memory cli", () => {
     expect(close).toHaveBeenCalled();
   });
 
+  it("prefers live vector probe over stale cached vector errors", async () => {
+    const close = vi.fn(async () => {});
+    mockManager({
+      probeVectorAvailability: vi.fn(async () => true),
+      probeVectorStatus: vi.fn(async () => ({
+        available: true,
+        domains: {
+          user_memory: { domain: "user_memory", available: true },
+          docs_kb: { domain: "docs_kb", available: true },
+          history: { domain: "history", available: true },
+        },
+      })),
+      status: () =>
+        makeMemoryStatus({
+          vector: {
+            enabled: true,
+            available: false,
+            loadError: "stale cached error",
+          },
+          custom: {
+            backendError: "stale cached error",
+          },
+        }),
+      close,
+    });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["status"]);
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Vector: ready"));
+    expect(
+      log.mock.calls.some(
+        (call: unknown[]) =>
+          typeof call[0] === "string" && String(call[0]).includes("stale cached error"),
+      ),
+    ).toBe(false);
+    expect(close).toHaveBeenCalled();
+  });
+
   it("resolves configured memory SecretRefs through gateway snapshot", async () => {
     loadConfig.mockReturnValue({
       agents: {

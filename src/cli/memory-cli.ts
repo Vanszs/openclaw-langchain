@@ -13,6 +13,10 @@ import { setVerbose } from "../globals.js";
 import { getMemorySearchManager, type MemorySearchManagerResult } from "../memory/index.js";
 import { listMemoryFiles, normalizeExtraMemoryPaths } from "../memory/internal.js";
 import { getMemoryCliProvider } from "../memory/plugin-cli-registry.js";
+import {
+  getLiveVectorProbeStatus,
+  mergeLiveVectorProbeIntoStatus,
+} from "../memory/status-probe.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
@@ -525,12 +529,13 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
         let embeddingProbe:
           | Awaited<ReturnType<typeof manager.probeEmbeddingAvailability>>
           | undefined;
+        let liveVectorProbe: Awaited<ReturnType<typeof getLiveVectorProbeStatus>> | undefined;
         let indexError: string | undefined;
         const syncFn = manager.sync ? manager.sync.bind(manager) : undefined;
         if (deep) {
           await withProgress({ label: "Checking memory…", total: 2 }, async (progress) => {
             progress.setLabel("Probing vector…");
-            await manager.probeVectorAvailability();
+            liveVectorProbe = await getLiveVectorProbeStatus({ manager });
             progress.tick();
             progress.setLabel("Probing embeddings…");
             embeddingProbe = await manager.probeEmbeddingAvailability();
@@ -570,9 +575,14 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
             defaultRuntime.log("Memory backend does not support manual reindex.");
           }
         } else {
-          await manager.probeVectorAvailability();
+          liveVectorProbe = await getLiveVectorProbeStatus({ manager });
         }
-        const status = manager.status();
+        const status = liveVectorProbe
+          ? mergeLiveVectorProbeIntoStatus({
+              status: manager.status(),
+              probe: liveVectorProbe,
+            })
+          : manager.status();
         const sources = (
           status.sources?.length ? status.sources : ["memory"]
         ) as MemorySourceName[];

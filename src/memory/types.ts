@@ -18,6 +18,19 @@ export type MemoryEmbeddingProbeResult = {
   error?: string;
 };
 
+export type MemoryVectorProbeDomainStatus = {
+  domain: MemoryDomain;
+  available: boolean;
+  collection?: string;
+  error?: string;
+};
+
+export type MemoryVectorProbeStatus = {
+  available: boolean;
+  error?: string;
+  domains?: Partial<Record<MemoryDomain, MemoryVectorProbeDomainStatus>>;
+};
+
 export type MemorySyncProgressUpdate = {
   completed: number;
   total: number;
@@ -86,5 +99,6 @@ export interface MemorySearchManager {
   }): Promise<void>;
   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
   probeVectorAvailability(): Promise<boolean>;
+  probeVectorStatus?(params?: { domains?: MemoryDomain[] }): Promise<MemoryVectorProbeStatus>;
   close?(): Promise<void>;
 }

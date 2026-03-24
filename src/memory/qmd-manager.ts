@@ -25,6 +25,7 @@ import type {
   MemorySearchResult,
   MemorySource,
   MemorySyncProgressUpdate,
+  MemoryVectorProbeStatus,
 } from "./types.js";
 
 type SqliteDatabase = import("node:sqlite").DatabaseSync;
@@ -983,6 +984,22 @@ export class QmdMemoryManager implements MemorySearchManager {
 
   async probeVectorAvailability(): Promise<boolean> {
     return true;
+  }
+
+  async probeVectorStatus(params?: { domains?: MemoryDomain[] }): Promise<MemoryVectorProbeStatus> {
+    const domains = params?.domains ?? ["user_memory", "docs_kb", "history"];
+    return {
+      available: true,
+      domains: Object.fromEntries(
+        domains.map((domain) => [
+          domain,
+          {
+            domain,
+            available: true,
+          },
+        ]),
+      ) as NonNullable<MemoryVectorProbeStatus["domains"]>,
+    };
   }
 
   async close(): Promise<void> {

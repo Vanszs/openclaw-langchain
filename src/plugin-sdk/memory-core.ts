@@ -26,4 +26,6 @@ export type {
   MemorySearchResult,
   MemorySource,
   MemorySyncProgressUpdate,
+  MemoryVectorProbeDomainStatus,
+  MemoryVectorProbeStatus,
 } from "../memory/types.js";

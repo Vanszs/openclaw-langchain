@@ -32,6 +32,7 @@ import type {
   MemorySearchResult,
   MemorySource,
   MemorySyncProgressUpdate,
+  MemoryVectorProbeStatus,
 } from "./types.js";
 const SNIPPET_MAX_CHARS = 700;
 const VECTOR_TABLE = "chunks_vec";
@@ -836,6 +837,31 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       return false;
     }
     return this.ensureVectorReady();
+  }
+
+  async probeVectorStatus(params?: { domains?: MemoryDomain[] }): Promise<MemoryVectorProbeStatus> {
+    const available = await this.probeVectorAvailability();
+    const domains = params?.domains ?? ["user_memory", "docs_kb", "history"];
+    const error =
+      available || !this.vector.enabled
+        ? undefined
+        : (this.vector.loadError ??
+          this.providerUnavailableReason ??
+          "vector search unavailable for the current memory backend");
+    return {
+      available,
+      ...(error ? { error } : {}),
+      domains: Object.fromEntries(
+        domains.map((domain) => [
+          domain,
+          {
+            domain,
+            available,
+            ...(error ? { error } : {}),
+          },
+        ]),
+      ) as NonNullable<MemoryVectorProbeStatus["domains"]>,
+    };
   }
 
   async probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult> {
