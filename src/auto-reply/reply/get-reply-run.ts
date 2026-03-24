@@ -11,6 +11,10 @@ import {
 import { callGatewayTool } from "../../agents/tools/gateway.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
+  resolveAgentModelFallbackValues,
+  resolveAgentModelPrimaryValue,
+} from "../../config/model-input.js";
+import {
   resolveGroupSessionKey,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -495,22 +499,6 @@ export async function runPreparedReply(
     );
   }
   try {
-    const { buildDeterministicSelfReplyContext } = await import("../self-facts.runtime.js");
-    const selfReply = await buildDeterministicSelfReplyContext({
-      cfg,
-      workspaceDir,
-      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
-    });
-    if (selfReply) {
-      typing.cleanup();
-      return selfReply.directReply;
-    }
-  } catch (error) {
-    logVerbose(
-      `self-facts: failed, continuing without deterministic self reply: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  try {
     const { buildDeterministicSchedulingContext } = await import("../scheduling-intent.runtime.js");
     const schedulingReply = await buildDeterministicSchedulingContext({
       cfg,
@@ -534,6 +522,30 @@ export async function runPreparedReply(
   } catch (error) {
     logVerbose(
       `scheduling-intent: failed, continuing without deterministic scheduling reply: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    // Scheduling must run before self-facts so mixed prompts like cron+email/webhook
+    // stay on the scheduler path instead of getting consumed by generic capability answers.
+    const { buildDeterministicSelfReplyContext } = await import("../self-facts.runtime.js");
+    const selfReply = await buildDeterministicSelfReplyContext({
+      cfg,
+      workspaceDir,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+      runtime: {
+        textPrimary: provider && model ? `${provider}/${model}` : undefined,
+        textFallbacks: resolveAgentModelFallbackValues(agentCfg?.model),
+        imagePrimary: resolveAgentModelPrimaryValue(agentCfg?.imageModel),
+        imageFallbacks: resolveAgentModelFallbackValues(agentCfg?.imageModel),
+      },
+    });
+    if (selfReply) {
+      typing.cleanup();
+      return selfReply.directReply;
+    }
+  } catch (error) {
+    logVerbose(
+      `self-facts: failed, continuing without deterministic self reply: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   try {

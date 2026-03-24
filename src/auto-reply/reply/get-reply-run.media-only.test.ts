@@ -230,6 +230,24 @@ function baseParams(
 describe("runPreparedReply media-only handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(runReplyAgent).mockReset();
+    vi.mocked(buildAttachmentRetrievalContextNote).mockReset();
+    vi.mocked(buildDeterministicMemoryRecallContext).mockReset();
+    vi.mocked(buildDeterministicSelfReplyContext).mockReset();
+    vi.mocked(buildDeterministicSchedulingContext).mockReset();
+    vi.mocked(resolvePendingSchedulingFollowup).mockReset();
+    vi.mocked(maybeHandleDeterministicMemorySave).mockReset();
+    vi.mocked(drainFormattedSystemEvents).mockReset();
+    vi.mocked(resolveTypingMode).mockReset();
+    vi.mocked(runReplyAgent).mockResolvedValue({ text: "ok" });
+    vi.mocked(buildAttachmentRetrievalContextNote).mockResolvedValue(undefined);
+    vi.mocked(buildDeterministicMemoryRecallContext).mockResolvedValue(undefined);
+    vi.mocked(buildDeterministicSelfReplyContext).mockResolvedValue(undefined);
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValue(undefined);
+    vi.mocked(resolvePendingSchedulingFollowup).mockResolvedValue(undefined);
+    vi.mocked(maybeHandleDeterministicMemorySave).mockResolvedValue(undefined);
+    vi.mocked(drainFormattedSystemEvents).mockResolvedValue(undefined);
+    vi.mocked(resolveTypingMode).mockReturnValue("off");
   });
 
   it("allows media-only prompts and preserves thread context in queued followups", async () => {
@@ -353,6 +371,40 @@ describe("runPreparedReply media-only handling", () => {
     expect(result).toEqual({
       text: "Saya Hypatia.",
     });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("prefers scheduling replies over generic capability replies for mixed cron prompts", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Ya, cron tersedia di runtime ini. Untuk reminder, saya masih perlu targetnya: kirim ke webhook, simpan internal saja. Email atau calendar langsung belum menjadi target cron bawaan saat ini.",
+      },
+    });
+    vi.mocked(buildDeterministicSelfReplyContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Gmail didukung, tetapi belum dikonfigurasi di runtime ini.",
+      },
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "bisa pakai cron untuk kirim pengingat lewat email?",
+          RawBody: "bisa pakai cron untuk kirim pengingat lewat email?",
+          CommandBody: "bisa pakai cron untuk kirim pengingat lewat email?",
+        },
+        sessionCtx: {
+          Body: "bisa pakai cron untuk kirim pengingat lewat email?",
+          BodyStripped: "bisa pakai cron untuk kirim pengingat lewat email?",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      text: "Ya, cron tersedia di runtime ini. Untuk reminder, saya masih perlu targetnya: kirim ke webhook, simpan internal saja. Email atau calendar langsung belum menjadi target cron bawaan saat ini.",
+    });
+    expect(vi.mocked(buildDeterministicSelfReplyContext)).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 

@@ -141,6 +141,189 @@ describe("buildDeterministicSchedulingContext", () => {
     expect(result?.directReply?.text).toContain("di chat ini");
   });
 
+  it("asks for a concrete configured channel target when the channel is known but the target is not", async () => {
+    listConfiguredMessageChannelsMock.mockResolvedValue(["googlechat"]);
+
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {},
+      sessionKey: "main",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "reminder",
+          rawRequest: "ingatkan 1 menit lagi untuk deploy",
+          normalizedRequest: "ingatkan 1 menit lagi untuk deploy",
+          schedule: {
+            mode: "relative",
+            delayMs: 60_000,
+            originalText: "1 menit lagi",
+          },
+          recommendedExecutor: "cron",
+          allowedDeliveryChoices: ["configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "google chat aja",
+    });
+
+    expect(result?.resolvedSchedulingAction).toBeUndefined();
+    expect(result?.directReply?.text).toContain("Google Chat");
+    expect(result?.directReply?.text).toContain("masih perlu target");
+  });
+
+  it("reuses the originating route when the chosen configured channel matches it", async () => {
+    listConfiguredMessageChannelsMock.mockResolvedValue(["googlechat"]);
+
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {},
+      sessionKey: "main",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "reminder",
+          rawRequest: "ingatkan 1 menit lagi untuk deploy",
+          normalizedRequest: "ingatkan 1 menit lagi untuk deploy",
+          schedule: {
+            mode: "relative",
+            delayMs: 60_000,
+            originalText: "1 menit lagi",
+          },
+          recommendedExecutor: "cron",
+          originatingRoute: {
+            channel: "googlechat",
+            to: "spaces/AAA/messages/BBB",
+          },
+          allowedDeliveryChoices: ["configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "google chat aja",
+    });
+
+    expect(result?.resolvedSchedulingAction?.params.delivery).toMatchObject({
+      mode: "announce",
+      channel: "googlechat",
+      to: "spaces/AAA/messages/BBB",
+    });
+  });
+
+  it("uses current-session delivery semantics for periodic same-chat monitoring", async () => {
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {
+        OriginatingChannel: "telegram",
+        OriginatingTo: "12345",
+      },
+      sessionKey: "agent:main:telegram:direct:12345",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "periodic_monitoring",
+          rawRequest: "cek email tiap 30 menit",
+          normalizedRequest: "cek email tiap 30 menit",
+          schedule: {
+            mode: "recurring",
+            everyMs: 30 * 60_000,
+            originalText: "tiap 30 menit",
+          },
+          recommendedExecutor: "heartbeat",
+          originatingRoute: {
+            channel: "telegram",
+            to: "12345",
+          },
+          allowedDeliveryChoices: ["same_chat", "configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "balas chat saja",
+    });
+
+    expect(result?.resolvedSchedulingAction?.params.sessionTarget).toBe("current");
+    expect(result?.resolvedSchedulingAction?.params.payload).toMatchObject({
+      kind: "agentTurn",
+    });
+    expect(result?.resolvedSchedulingAction?.params.delivery).toMatchObject({
+      mode: "announce",
+      channel: "telegram",
+      to: "12345",
+    });
+  });
+
+  it("uses heartbeat-style internal monitoring when heartbeat remains selected", async () => {
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {},
+      sessionKey: "main",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "periodic_monitoring",
+          rawRequest: "cek email tiap 30 menit",
+          normalizedRequest: "cek email tiap 30 menit",
+          schedule: {
+            mode: "recurring",
+            everyMs: 30 * 60_000,
+            originalText: "tiap 30 menit",
+          },
+          recommendedExecutor: "heartbeat",
+          allowedDeliveryChoices: ["configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "internal aja",
+    });
+
+    expect(result?.resolvedSchedulingAction?.params.sessionTarget).toBe("main");
+    expect(result?.resolvedSchedulingAction?.params.payload).toMatchObject({
+      kind: "systemEvent",
+    });
+  });
+
+  it("does not accept same-chat follow-ups when same-chat delivery was never allowed", async () => {
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {},
+      sessionKey: "main",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "reminder",
+          rawRequest: "ingatkan 1 menit lagi untuk deploy",
+          normalizedRequest: "ingatkan 1 menit lagi untuk deploy",
+          schedule: {
+            mode: "relative",
+            delayMs: 60_000,
+            originalText: "1 menit lagi",
+          },
+          recommendedExecutor: "cron",
+          allowedDeliveryChoices: ["configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "balas chat saja",
+    });
+
+    expect(result?.resolvedSchedulingAction).toBeUndefined();
+    expect(result?.directReply?.text).toContain("belum tersedia");
+    expect(result?.sessionPatch?.pendingSchedulingIntent?.allowedDeliveryChoices).toEqual([
+      "configured_channel",
+      "webhook",
+      "internal",
+    ]);
+  });
+
   it("expires stale pending reminder follow-ups", async () => {
     const result = await resolvePendingSchedulingFollowup({
       cfg: { cron: { enabled: true } },

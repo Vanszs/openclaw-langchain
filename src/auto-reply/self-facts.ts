@@ -8,13 +8,15 @@ import { logVerbose } from "../globals.js";
 import type { ReplyPayload } from "./types.js";
 
 const IDENTITY_QUERY_RE =
-  /^(?:siapa\s+(?:anda|kamu|dirimu)|who\s+are\s+you|what\s+is\s+your\s+name)\b/i;
+  /(?:\bsiapa\s+(?:anda|kamu|dirimu)\b|\bwho\s+are\s+you\b|\bwhat\s+is\s+your\s+name\b)/i;
 const GMAIL_CAPABILITY_RE =
-  /\b(gmail|google\s*mail|email)\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b.*\b(gmail|google\s*mail|email)\b/i;
+  /\b(gmail|google\s*mail)\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b.*\b(gmail|google\s*mail)\b/i;
 const CALENDAR_CAPABILITY_RE =
   /\b(calendar|kalender|google\s*calendar|gcal)\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi|buat)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi|buat)\b.*\b(calendar|kalender|google\s*calendar|gcal)\b/i;
 const WEBHOOK_CAPABILITY_RE =
   /\bwebhook\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b.*\bwebhook\b/i;
+const INTEGRATION_SUBJECT_RE =
+  /\b(anda|kamu|dirimu|you|your|assistant|runtime|instance|environment|server)\b|\b(?:di|in)\s+(?:runtime|lingkungan|environment|instance)\b|\blingkungan\s+ini\b/i;
 const SELF_CUE_RE = /\b(anda|kamu|dirimu|you|your|assistant|ai)\b/i;
 const ORCHESTRA_CUE_RE = /\b(orkestra|orchestra|orchestration|orchestrator|orkestrasi|fallback)\b/i;
 const ORCHESTRA_RUNTIME_RE = /\b(model|ai|llm|runtime|ocr|gambar|image|text|teks)\b/i;
@@ -28,6 +30,13 @@ const MUSIC_ORCHESTRA_NEGATIVE_RE =
 
 export type DeterministicSelfReplyContext = {
   directReply: ReplyPayload;
+};
+
+type RuntimeOrchestraState = {
+  textPrimary?: string;
+  textFallbacks?: string[];
+  imagePrimary?: string;
+  imageFallbacks?: string[];
 };
 
 type SelfIntent = "identity" | "orchestra_status" | "orchestra_inventory" | "integration";
@@ -74,6 +83,10 @@ function hasOrchestraContext(query: string): boolean {
   );
 }
 
+function hasIntegrationContext(query: string): boolean {
+  return INTEGRATION_SUBJECT_RE.test(query);
+}
+
 function detectSelfIntent(query: string): SelfIntent | undefined {
   if (!query) {
     return undefined;
@@ -81,11 +94,11 @@ function detectSelfIntent(query: string): SelfIntent | undefined {
   if (IDENTITY_QUERY_RE.test(query)) {
     return "identity";
   }
-  if (
+  const asksIntegrationCapability =
     GMAIL_CAPABILITY_RE.test(query) ||
     CALENDAR_CAPABILITY_RE.test(query) ||
-    WEBHOOK_CAPABILITY_RE.test(query)
-  ) {
+    WEBHOOK_CAPABILITY_RE.test(query);
+  if (hasIntegrationContext(query) && asksIntegrationCapability) {
     return "integration";
   }
   if (!hasOrchestraContext(query)) {
@@ -114,14 +127,20 @@ function buildIdentityReply(workspaceDir: string): ReplyPayload {
   };
 }
 
-function buildOrchestraSummary(cfg: OpenClawConfig): string {
+function buildOrchestraSummary(cfg: OpenClawConfig, runtime?: RuntimeOrchestraState): string {
   const defaults = cfg.agents?.defaults;
-  const textPrimary = formatModelLabel(resolveAgentModelPrimaryValue(defaults?.model));
-  const textFallbacks = resolveAgentModelFallbackValues(defaults?.model)
+  const textPrimary = formatModelLabel(
+    runtime?.textPrimary ?? resolveAgentModelPrimaryValue(defaults?.model),
+  );
+  const textFallbacks = (runtime?.textFallbacks ?? resolveAgentModelFallbackValues(defaults?.model))
     .map((entry) => formatModelLabel(entry))
     .filter((entry): entry is string => Boolean(entry));
-  const imagePrimary = formatModelLabel(resolveAgentModelPrimaryValue(defaults?.imageModel));
-  const imageFallbacks = resolveAgentModelFallbackValues(defaults?.imageModel)
+  const imagePrimary = formatModelLabel(
+    runtime?.imagePrimary ?? resolveAgentModelPrimaryValue(defaults?.imageModel),
+  );
+  const imageFallbacks = (
+    runtime?.imageFallbacks ?? resolveAgentModelFallbackValues(defaults?.imageModel)
+  )
     .map((entry) => formatModelLabel(entry))
     .filter((entry): entry is string => Boolean(entry));
 
@@ -143,8 +162,12 @@ function buildOrchestraSummary(cfg: OpenClawConfig): string {
   return parts.join(" ") || "Saya belum memiliki konfigurasi model orchestra yang aktif saat ini.";
 }
 
-function buildOrchestraReply(cfg: OpenClawConfig, intent: SelfIntent): ReplyPayload {
-  const summary = buildOrchestraSummary(cfg);
+function buildOrchestraReply(
+  cfg: OpenClawConfig,
+  intent: SelfIntent,
+  runtime?: RuntimeOrchestraState,
+): ReplyPayload {
+  const summary = buildOrchestraSummary(cfg, runtime);
   return {
     text:
       intent === "orchestra_status" && !summary.startsWith("Saya belum")
@@ -166,7 +189,7 @@ function detectCalendarIntegrationEnabled(cfg: OpenClawConfig): boolean {
 }
 
 function buildIntegrationCapabilityReply(cfg: OpenClawConfig, query: string): ReplyPayload {
-  const wantsGmail = /\bgmail\b|\bemail\b/i.test(query);
+  const wantsGmail = /\bgmail\b/i.test(query);
   const wantsCalendar = /\bcalendar\b|\bkalender\b|\bgcal\b/i.test(query);
   const wantsWebhook = /\bwebhook\b/i.test(query);
   const gmailConfigured = Boolean(cfg.hooks?.gmail?.account?.trim());
@@ -204,6 +227,7 @@ export async function buildDeterministicSelfReplyContext(params: {
   cfg: OpenClawConfig;
   workspaceDir: string;
   query: string;
+  runtime?: RuntimeOrchestraState;
 }): Promise<DeterministicSelfReplyContext | undefined> {
   const query = normalizeSelfQuery(params.query);
   const intent = detectSelfIntent(query);
@@ -224,6 +248,6 @@ export async function buildDeterministicSelfReplyContext(params: {
   }
   logVerbose(`self-facts: matched ${intent} intent`);
   return {
-    directReply: buildOrchestraReply(params.cfg, intent),
+    directReply: buildOrchestraReply(params.cfg, intent, params.runtime),
   };
 }

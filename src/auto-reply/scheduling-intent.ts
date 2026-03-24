@@ -31,8 +31,6 @@ const SAME_CHAT_RE =
 const INTERNAL_RE =
   /\b(internal|simpan\s+internal|simpan\s+aja|simpan\s+internal\s+saja|jangan\s+kirim|tanpa\s+kirim|jangan\s+balas|no\s+delivery|don't\s+send|dont\s+send)\b/i;
 const WEBHOOK_RE = /\bwebhook\b|https?:\/\//i;
-const CHANNEL_RE =
-  /\b(telegram|whatsapp|discord|slack|signal|matrix|googlechat|irc|imessage|sms)\b/i;
 const CANCEL_RE = /\b(batal|cancel|gak\s+jadi|ga\s+jadi|never\s+mind|abaikan)\b/i;
 const HEARTBEAT_SELECTION_RE = /\bheartbeat\b/i;
 const CRON_SELECTION_RE = /\bcron\b/i;
@@ -47,6 +45,8 @@ const REMINDER_PREFIX_RE =
   /^(?:tolong\s+|please\s+)?(?:ingatkan(?:\s+saya)?|buat\s+pengingat|set\s+reminder|remind(?:\s+me)?|chat\s+saya\s+lagi|ping\s+saya|kasih\s+tahu\s+saya|tolong\s+ingetin)\b/i;
 const CONNECTOR_PREFIX_RE = /^(?:untuk|buat|soal|bahwa|agar|supaya|to)\b\s*/i;
 const TRIM_FILLER_RE = /\b(?:saja|aja|dong|please|tolong)\b/gi;
+const SAME_CHANNEL_RE =
+  /\b(balas\s+saja|yang\s+tadi|ke\s+yang\s+sama|channel\s+yang\s+sama|pakai\s+channel\s+yang\s+sama)\b/i;
 
 export type DeterministicSchedulingAction = {
   kind: "cron.add";
@@ -222,20 +222,11 @@ function parseReminderSchedule(query: string): ReminderSchedule {
   };
 }
 
-function hasExplicitDeliveryIntent(query: string): boolean {
-  return (
-    SAME_CHAT_RE.test(query) ||
-    INTERNAL_RE.test(query) ||
-    WEBHOOK_RE.test(query) ||
-    CHANNEL_RE.test(query)
-  );
-}
-
 function detectDeliveryResolution(query: string): DeliveryResolution {
   if (CANCEL_RE.test(query)) {
     return { kind: "cancel" };
   }
-  if (SAME_CHAT_RE.test(query)) {
+  if (SAME_CHAT_RE.test(query) || SAME_CHANNEL_RE.test(query)) {
     return { kind: "same_chat" };
   }
   if (INTERNAL_RE.test(query)) {
@@ -245,14 +236,89 @@ function detectDeliveryResolution(query: string): DeliveryResolution {
     const targetUrl = query.match(/https?:\/\/\S+/i)?.[0];
     return { kind: "webhook", targetUrl };
   }
-  const channel = query.match(CHANNEL_RE)?.[1];
-  if (channel) {
-    return {
-      kind: "channel",
-      channel: normalizeMessageChannel(channel) ?? channel,
-    };
-  }
   return { kind: "none" };
+}
+
+function buildChannelMatchVariants(raw: string): string[] {
+  const base = normalizeWhitespace(raw.toLowerCase());
+  const compact = base.replace(/\s+/g, "");
+  return Array.from(
+    new Set([
+      base,
+      compact,
+      base.replace(/\s+/g, "-"),
+      base.replace(/\s+/g, "_"),
+      compact.replace(/[_-]/g, ""),
+    ]),
+  ).filter(Boolean);
+}
+
+function collectChannelPhrases(query: string, maxWords = 3): string[] {
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const phrases: string[] = [];
+  for (let size = Math.min(maxWords, tokens.length); size >= 1; size -= 1) {
+    for (let index = 0; index <= tokens.length - size; index += 1) {
+      phrases.push(tokens.slice(index, index + size).join(" "));
+    }
+  }
+  return Array.from(new Set(phrases));
+}
+
+async function resolveConfiguredChannelSelection(params: {
+  cfg: OpenClawConfig;
+  query: string;
+  pending?: PendingSchedulingIntent;
+  ctx?: MsgContext;
+}): Promise<string | undefined> {
+  const configuredChannels = new Set(await listConfiguredMessageChannels(params.cfg));
+  const currentRoute =
+    params.pending?.originatingRoute?.channel ??
+    (params.ctx ? resolveCurrentReturnRoute(params.ctx)?.channel : undefined);
+  if (currentRoute) {
+    configuredChannels.add(currentRoute);
+  }
+  if (configuredChannels.size === 0) {
+    return undefined;
+  }
+  for (const phrase of collectChannelPhrases(params.query)) {
+    for (const variant of buildChannelMatchVariants(phrase)) {
+      const resolved = normalizeMessageChannel(variant);
+      if (resolved && configuredChannels.has(resolved)) {
+        return resolved;
+      }
+    }
+  }
+  return undefined;
+}
+
+async function detectDeliveryResolutionFromRuntime(params: {
+  cfg: OpenClawConfig;
+  query: string;
+  pending?: PendingSchedulingIntent;
+  ctx?: MsgContext;
+}): Promise<DeliveryResolution> {
+  const direct = detectDeliveryResolution(params.query);
+  if (direct.kind === "same_chat") {
+    const channel = await resolveConfiguredChannelSelection(params);
+    if (channel) {
+      return {
+        kind: "channel",
+        channel,
+      };
+    }
+    return direct;
+  }
+  if (direct.kind !== "none") {
+    return direct;
+  }
+  const channel = await resolveConfiguredChannelSelection(params);
+  if (!channel) {
+    return { kind: "none" };
+  }
+  return {
+    kind: "channel",
+    channel,
+  };
 }
 
 function probeOpenClawCliAvailable(): boolean {
@@ -307,6 +373,22 @@ async function buildDeliveryOptions(params: {
   options.push("kirim ke webhook");
   options.push("simpan internal saja");
   return options;
+}
+
+async function buildAllowedDeliveryChoices(params: {
+  cfg: OpenClawConfig;
+  ctx: MsgContext;
+}): Promise<PendingSchedulingDeliveryChoice[]> {
+  const allowed: PendingSchedulingDeliveryChoice[] = ["webhook", "internal"];
+  if (resolveCurrentReturnRoute(params.ctx)) {
+    allowed.unshift("same_chat");
+  }
+  const configuredChannels = await listConfiguredMessageChannels(params.cfg);
+  if (configuredChannels.length > 0) {
+    const insertAt = allowed.includes("same_chat") ? 1 : 0;
+    allowed.splice(insertAt, 0, "configured_channel");
+  }
+  return Array.from(new Set(allowed));
 }
 
 async function buildReminderClarification(params: {
@@ -375,14 +457,9 @@ function buildPendingSchedulingIntent(params: {
   schedule: ReminderSchedule;
   recommendedExecutor: PendingSchedulingIntent["recommendedExecutor"];
   originatingRoute?: PendingSchedulingIntent["originatingRoute"];
+  allowedDeliveryChoices: PendingSchedulingDeliveryChoice[];
 }): PendingSchedulingIntent {
   const now = Date.now();
-  const allowedDeliveryChoices: PendingSchedulingDeliveryChoice[] = [
-    "same_chat",
-    "configured_channel",
-    "webhook",
-    "internal",
-  ];
   return {
     kind: params.kind,
     rawRequest: params.rawRequest,
@@ -390,7 +467,7 @@ function buildPendingSchedulingIntent(params: {
     schedule: params.schedule,
     recommendedExecutor: params.recommendedExecutor,
     originatingRoute: params.originatingRoute,
-    allowedDeliveryChoices,
+    allowedDeliveryChoices: params.allowedDeliveryChoices,
     createdAt: now,
     expiresAt: now + PENDING_SCHEDULING_TTL_MS,
   };
@@ -408,6 +485,41 @@ function buildPendingCanceledReply(): ReplyPayload {
   };
 }
 
+function isSelectionAllowed(
+  pending: PendingSchedulingIntent,
+  selection: DeliveryResolution,
+): boolean {
+  switch (selection.kind) {
+    case "cancel":
+    case "none":
+      return true;
+    case "same_chat":
+      return pending.allowedDeliveryChoices.includes("same_chat");
+    case "channel":
+      return pending.allowedDeliveryChoices.includes("configured_channel");
+    case "webhook":
+      return pending.allowedDeliveryChoices.includes("webhook");
+    case "internal":
+      return pending.allowedDeliveryChoices.includes("internal");
+  }
+}
+
+async function buildDisallowedDeliveryReply(params: {
+  cfg: OpenClawConfig;
+  ctx: MsgContext;
+  pending: PendingSchedulingIntent;
+}): Promise<ReplyPayload> {
+  const clarification = await buildReminderClarification({
+    cfg: params.cfg,
+    ctx: params.ctx,
+    query: params.pending.rawRequest,
+    periodicMonitoring: params.pending.kind === "periodic_monitoring",
+  });
+  return {
+    text: `Pilihan itu belum tersedia untuk permintaan ini. ${clarification.text}`,
+  };
+}
+
 function buildReminderPrompt(reminderText: string): string {
   return `Kirim pengingat ini sekarang. Balas dengan tepat teks berikut dan jangan tambah apa pun:\n${reminderText}`;
 }
@@ -416,14 +528,12 @@ function buildMonitoringPrompt(requestText: string): string {
   return `Lakukan monitoring sesuai permintaan ini dan kirim ringkasan singkat bila ada temuan relevan:\n${requestText}`;
 }
 
-function resolveNamedChannelTarget(params: {
+async function resolveNamedChannelTarget(params: {
   selection: Extract<DeliveryResolution, { kind: "channel" }>;
   pending: PendingSchedulingIntent;
   cfg: OpenClawConfig;
-}): { channel: string; to: string; accountId?: string } | { clarification: ReplyPayload } {
-  const configuredChannels = new Set(
-    Object.keys(params.cfg.channels ?? {}).map((entry) => normalizeMessageChannel(entry) ?? entry),
-  );
+}): Promise<{ channel: string; to: string; accountId?: string } | { clarification: ReplyPayload }> {
+  const configuredChannels = new Set(await listConfiguredMessageChannels(params.cfg));
   if (!configuredChannels.has(params.selection.channel)) {
     return {
       clarification: {
@@ -441,17 +551,17 @@ function resolveNamedChannelTarget(params: {
   }
   return {
     clarification: {
-      text: `Saya bisa memakai ${params.selection.channel}, tetapi saya masih perlu target ${params.selection.channel}-nya.`,
+      text: `Saya bisa memakai ${formatChannelLabel(params.selection.channel)}, tetapi saya masih perlu target ${formatChannelLabel(params.selection.channel)}-nya.`,
     },
   };
 }
 
-function buildReminderAction(params: {
+async function buildReminderAction(params: {
   pending: PendingSchedulingIntent;
   selection: DeliveryResolution;
   cfg: OpenClawConfig;
   sessionKey: string;
-}): { action: DeterministicSchedulingAction } | { clarification: ReplyPayload } {
+}): Promise<{ action: DeterministicSchedulingAction } | { clarification: ReplyPayload }> {
   const reminderText = buildReminderText(params.pending.normalizedRequest);
   const name = buildJobName("reminder", params.pending.normalizedRequest);
   const schedule =
@@ -535,7 +645,7 @@ function buildReminderAction(params: {
   }
 
   if (params.selection.kind === "channel") {
-    const resolved = resolveNamedChannelTarget({
+    const resolved = await resolveNamedChannelTarget({
       selection: params.selection,
       pending: params.pending,
       cfg: params.cfg,
@@ -617,12 +727,12 @@ function buildReminderAction(params: {
   };
 }
 
-function buildPeriodicAction(params: {
+async function buildPeriodicAction(params: {
   pending: PendingSchedulingIntent;
   selection: DeliveryResolution;
   cfg: OpenClawConfig;
   sessionKey: string;
-}): { action: DeterministicSchedulingAction } | { clarification: ReplyPayload } {
+}): Promise<{ action: DeterministicSchedulingAction } | { clarification: ReplyPayload }> {
   const schedule = params.pending.schedule;
   if (schedule.mode !== "recurring") {
     return {
@@ -636,19 +746,42 @@ function buildPeriodicAction(params: {
   const name = buildJobName("periodic_monitoring", params.pending.normalizedRequest);
 
   if (params.selection.kind === "internal") {
+    if (params.pending.recommendedExecutor === "heartbeat") {
+      return {
+        action: {
+          kind: "cron.add",
+          confirmationText: `Siap, saya akan memantau tiap ${formatDurationText(schedule.everyMs)} secara internal lewat heartbeat.`,
+          params: {
+            name,
+            schedule: { kind: "every", everyMs: schedule.everyMs },
+            sessionTarget: "main",
+            sessionKey: params.sessionKey,
+            wakeMode: "now",
+            payload: {
+              kind: "systemEvent",
+              text: monitoringText,
+            },
+          },
+        },
+      };
+    }
     return {
       action: {
         kind: "cron.add",
-        confirmationText: `Siap, saya akan memantau tiap ${formatDurationText(schedule.everyMs)} tanpa pengiriman eksternal.`,
+        confirmationText: `Siap, saya akan memantau tiap ${formatDurationText(schedule.everyMs)} secara internal lewat cron.`,
         params: {
           name,
           schedule: { kind: "every", everyMs: schedule.everyMs },
-          sessionTarget: "main",
+          sessionTarget: "current",
           sessionKey: params.sessionKey,
-          wakeMode: "now",
           payload: {
-            kind: "systemEvent",
-            text: monitoringText,
+            kind: "agentTurn",
+            message: monitoringText,
+            lightContext: true,
+            timeoutSeconds: 60,
+          },
+          delivery: {
+            mode: "none",
           },
         },
       },
@@ -656,6 +789,14 @@ function buildPeriodicAction(params: {
   }
 
   if (params.selection.kind === "same_chat") {
+    const route = params.pending.originatingRoute;
+    if (!route?.channel || !route.to) {
+      return {
+        clarification: {
+          text: "Saya belum punya route chat yang bisa dipakai. Sebutkan channel atau targetnya dulu.",
+        },
+      };
+    }
     return {
       action: {
         kind: "cron.add",
@@ -663,12 +804,19 @@ function buildPeriodicAction(params: {
         params: {
           name,
           schedule: { kind: "every", everyMs: schedule.everyMs },
-          sessionTarget: "main",
+          sessionTarget: "current",
           sessionKey: params.sessionKey,
-          wakeMode: "now",
           payload: {
-            kind: "systemEvent",
-            text: monitoringText,
+            kind: "agentTurn",
+            message: monitoringText,
+            lightContext: true,
+            timeoutSeconds: 60,
+          },
+          delivery: {
+            mode: "announce",
+            channel: route.channel,
+            to: route.to,
+            accountId: route.accountId,
           },
         },
       },
@@ -676,7 +824,7 @@ function buildPeriodicAction(params: {
   }
 
   if (params.selection.kind === "channel") {
-    const resolved = resolveNamedChannelTarget({
+    const resolved = await resolveNamedChannelTarget({
       selection: params.selection,
       pending: params.pending,
       cfg: params.cfg,
@@ -754,14 +902,6 @@ function buildPeriodicAction(params: {
   };
 }
 
-function isFollowupRelevant(query: string): boolean {
-  return (
-    detectDeliveryResolution(query).kind !== "none" ||
-    HEARTBEAT_SELECTION_RE.test(query) ||
-    CRON_SELECTION_RE.test(query)
-  );
-}
-
 export async function resolvePendingSchedulingFollowup(params: {
   cfg: OpenClawConfig;
   ctx: MsgContext;
@@ -779,9 +919,20 @@ export async function resolvePendingSchedulingFollowup(params: {
     return undefined;
   }
 
+  const selection = await detectDeliveryResolutionFromRuntime({
+    cfg: params.cfg,
+    query,
+    pending,
+    ctx: params.ctx,
+  });
+
   if (pending.expiresAt <= Date.now()) {
     logVerbose("scheduling-intent: pending clarification expired");
-    if (isFollowupRelevant(query)) {
+    if (
+      selection.kind !== "none" ||
+      HEARTBEAT_SELECTION_RE.test(query) ||
+      CRON_SELECTION_RE.test(query)
+    ) {
       return {
         directReply: buildPendingExpiredReply(),
         clearPendingScheduling: true,
@@ -791,8 +942,6 @@ export async function resolvePendingSchedulingFollowup(params: {
       clearPendingScheduling: true,
     };
   }
-
-  const selection = detectDeliveryResolution(query);
   if (selection.kind === "cancel") {
     logVerbose("scheduling-intent: pending clarification canceled");
     return {
@@ -818,6 +967,20 @@ export async function resolvePendingSchedulingFollowup(params: {
     }
   }
 
+  if (!isSelectionAllowed(nextPending, selection)) {
+    logVerbose(`scheduling-intent: selection ${selection.kind} is not allowed for pending state`);
+    return {
+      directReply: await buildDisallowedDeliveryReply({
+        cfg: params.cfg,
+        ctx: params.ctx,
+        pending: nextPending,
+      }),
+      sessionPatch: {
+        pendingSchedulingIntent: nextPending,
+      },
+    };
+  }
+
   if (selection.kind === "none") {
     if (nextPending !== pending) {
       return {
@@ -838,13 +1001,13 @@ export async function resolvePendingSchedulingFollowup(params: {
   logVerbose(`scheduling-intent: consuming pending clarification with selection ${selection.kind}`);
   const resolved =
     nextPending.kind === "reminder"
-      ? buildReminderAction({
+      ? await buildReminderAction({
           pending: nextPending,
           selection,
           cfg: params.cfg,
           sessionKey: params.sessionKey,
         })
-      : buildPeriodicAction({
+      : await buildPeriodicAction({
           pending: nextPending,
           selection,
           cfg: params.cfg,
@@ -905,6 +1068,10 @@ export async function buildDeterministicSchedulingContext(params: {
   const recommendedExecutor: PendingSchedulingIntent["recommendedExecutor"] = isPeriodic
     ? "heartbeat"
     : "cron";
+  const allowedDeliveryChoices = await buildAllowedDeliveryChoices({
+    cfg: params.cfg,
+    ctx: params.ctx,
+  });
   const pending = buildPendingSchedulingIntent({
     kind: isPeriodic ? "periodic_monitoring" : "reminder",
     rawRequest: params.query,
@@ -912,6 +1079,7 @@ export async function buildDeterministicSchedulingContext(params: {
     schedule,
     recommendedExecutor,
     originatingRoute: resolveCurrentReturnRoute(params.ctx) ?? undefined,
+    allowedDeliveryChoices,
   });
 
   if (schedule.mode === "unresolved") {
@@ -929,7 +1097,13 @@ export async function buildDeterministicSchedulingContext(params: {
     };
   }
 
-  if (!hasExplicitDeliveryIntent(query)) {
+  const selection = await detectDeliveryResolutionFromRuntime({
+    cfg: params.cfg,
+    query,
+    pending,
+    ctx: params.ctx,
+  });
+  if (selection.kind === "none") {
     logVerbose("scheduling-intent: created delivery clarification");
     return {
       directReply: await buildReminderClarification({
@@ -944,16 +1118,29 @@ export async function buildDeterministicSchedulingContext(params: {
     };
   }
 
-  const selection = detectDeliveryResolution(query);
+  if (!isSelectionAllowed(pending, selection)) {
+    logVerbose(`scheduling-intent: first-turn selection ${selection.kind} is not allowed`);
+    return {
+      directReply: await buildDisallowedDeliveryReply({
+        cfg: params.cfg,
+        ctx: params.ctx,
+        pending,
+      }),
+      sessionPatch: {
+        pendingSchedulingIntent: pending,
+      },
+    };
+  }
+
   const resolved =
     pending.kind === "reminder"
-      ? buildReminderAction({
+      ? await buildReminderAction({
           pending,
           selection,
           cfg: params.cfg,
           sessionKey: params.ctx.SessionKey ?? "main",
         })
-      : buildPeriodicAction({
+      : await buildPeriodicAction({
           pending,
           selection,
           cfg: params.cfg,
