@@ -2577,6 +2577,32 @@ describe("dispatchReplyFromConfig", () => {
     expect(finalCalls[0][0]).toMatchObject({ text: "The answer is 42" });
   });
 
+  it("sanitizes leaked planner scaffolding from final replies on external channels", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram" });
+    const replyResolver = async () =>
+      ({
+        text: [
+          "Ya, saya dapat akses RAG.",
+          "",
+          "Oops…",
+          "",
+          'Given the conversation, we need to answer: "anda bisa akses rag?"',
+          "The user asks if the assistant can access RAG.",
+          "Provide concise answer in Indonesian. Ya, saya sudah terhubung.",
+        ].join("\n"),
+      }) satisfies ReplyPayload;
+
+    await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Ya, saya dapat akses RAG.",
+      }),
+    );
+  });
+
   it("suppresses isReasoning payloads from block replies (generic dispatch path)", async () => {
     setNoAbort();
     const dispatcher = createDispatcher();

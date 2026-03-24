@@ -27,7 +27,10 @@ describe("memory recall deterministic routing", () => {
 
   it("matches explicit memory/RAG recall questions", () => {
     expect(shouldInjectDeterministicMemoryRecall("cek chroma db")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("ada apa saja di rag")).toBe(true);
     expect(shouldInjectDeterministicMemoryRecall("is memory working")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("anda bisa akses rag?")).toBe(true);
+    expect(shouldInjectDeterministicMemoryRecall("can you access chroma db?")).toBe(true);
     expect(shouldInjectDeterministicMemoryRecall("who am i?")).toBe(true);
     expect(shouldInjectDeterministicMemoryRecall("apa yang kamu tahu tentang aku?")).toBe(true);
     expect(
@@ -229,11 +232,66 @@ describe("memory recall deterministic routing", () => {
     expect(result?.note).toContain("Deterministic route: memory-backend-status");
     expect(result?.note).toContain("Retrieval status: backend-ready");
     expect(result?.note).toContain("Vector probe: ok");
-    expect(result?.note).toContain("Store: http://127.0.0.1:8889");
+    expect(result?.note).toContain("Store: configured");
     expect(result?.note).not.toContain("stale cached error");
+    expect(result?.directReply).toEqual({
+      text: "Ya, saya bisa mengakses RAG. Backend Chroma siap dan domain yang dapat di-query saat ini: user memory, docs KB, history.",
+    });
     expect(result?.systemPromptHint).toContain(
       "Deterministic memory backend status probing already ran",
     );
+    expect(result?.systemPromptHint).toContain("do not expose raw store URLs");
+  });
+
+  it("returns deterministic inventory guidance for generic RAG inventory questions", async () => {
+    vi.mocked(getMemorySearchManager).mockResolvedValue({
+      manager: {
+        search: vi.fn(),
+        readFile: vi.fn(),
+        status: vi.fn().mockReturnValue({
+          backend: "plugin",
+          provider: "langchain",
+          model: "text-embedding-3-small",
+          dbPath: "http://127.0.0.1:8889",
+          vector: { enabled: true, available: true },
+        }),
+        probeEmbeddingAvailability: vi.fn(),
+        probeVectorAvailability: vi.fn().mockResolvedValue(true),
+        probeVectorStatus: vi.fn().mockResolvedValue({
+          available: true,
+          domains: {
+            user_memory: {
+              domain: "user_memory",
+              available: true,
+              collection: "openclaw-main-user-memory",
+            },
+            docs_kb: {
+              domain: "docs_kb",
+              available: true,
+              collection: "openclaw-main-docs-kb",
+            },
+            history: {
+              domain: "history",
+              available: true,
+              collection: "openclaw-main-history",
+            },
+          },
+        }),
+      },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+      },
+      cfg: { agents: { defaults: {} } },
+      query: "ada apa saja di rag",
+    });
+
+    expect(result?.note).toContain("Deterministic route: rag-inventory");
+    expect(result?.note).toContain("Retrieval status: backend-ready");
+    expect(result?.directReply?.text).toContain("RAG saya dibagi menjadi tiga domain");
+    expect(result?.directReply?.text).toContain("Backend Chroma siap.");
   });
 
   it("reports per-domain partial backend health when one collection probe fails", async () => {
@@ -287,6 +345,9 @@ describe("memory recall deterministic routing", () => {
     expect(result?.note).toContain("Vector probe: partial");
     expect(result?.note).toContain("- history: failed | collection=openclaw-main-history");
     expect(result?.note).toContain("Backend error: history collection unavailable");
+    expect(result?.directReply?.text).toContain("Saya bisa mengakses sebagian RAG.");
+    expect(result?.directReply?.text).toContain("Domain yang aktif: user memory, docs KB.");
+    expect(result?.directReply?.text).toContain("Domain yang bermasalah: history.");
   });
 
   it("reports backend-unavailable when the live vector probe fails", async () => {
@@ -317,6 +378,9 @@ describe("memory recall deterministic routing", () => {
     expect(result?.note).toContain("Retrieval status: backend-unavailable");
     expect(result?.note).toContain("Vector probe: failed");
     expect(result?.note).toContain("Backend error: connect ECONNREFUSED");
+    expect(result?.directReply).toEqual({
+      text: "Saat ini saya tidak bisa mengakses RAG. Koneksi ke backend RAG gagal.",
+    });
   });
 
   it("returns unavailable context when backend is unavailable", async () => {

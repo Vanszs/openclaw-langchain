@@ -48,6 +48,7 @@ import type { FinalizedMsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
+import { sanitizeExternalReplyPayload } from "./external-outbound-sanitize.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { shouldSuppressReasoningPayload } from "./reply-payloads.js";
@@ -567,7 +568,8 @@ export async function dispatchReplyFromConfig(params: {
               inboundAudio,
               ttsAuto: sessionTtsAuto,
             });
-            const deliveryPayload = resolveToolDeliveryPayload(ttsPayload);
+            const sanitizedPayload = sanitizeExternalReplyPayload(ttsPayload);
+            const deliveryPayload = resolveToolDeliveryPayload(sanitizedPayload);
             if (!deliveryPayload) {
               return;
             }
@@ -603,10 +605,11 @@ export async function dispatchReplyFromConfig(params: {
               inboundAudio,
               ttsAuto: sessionTtsAuto,
             });
+            const deliveryPayload = sanitizeExternalReplyPayload(ttsPayload);
             if (shouldRouteToOriginating) {
-              await sendPayloadAsync(ttsPayload, context?.abortSignal, false);
+              await sendPayloadAsync(deliveryPayload, context?.abortSignal, false);
             } else {
-              dispatcher.sendBlockReply(ttsPayload);
+              dispatcher.sendBlockReply(deliveryPayload);
             }
           };
           return run();
@@ -659,10 +662,11 @@ export async function dispatchReplyFromConfig(params: {
         inboundAudio,
         ttsAuto: sessionTtsAuto,
       });
+      const deliveryReply = sanitizeExternalReplyPayload(ttsReply);
       if (shouldRouteToOriginating && originatingChannel && originatingTo) {
         // Route final reply to originating channel.
         const result = await routeReply({
-          payload: ttsReply,
+          payload: deliveryReply,
           channel: originatingChannel,
           to: originatingTo,
           sessionKey: ctx.SessionKey,
@@ -682,7 +686,7 @@ export async function dispatchReplyFromConfig(params: {
           routedFinalCount += 1;
         }
       } else {
-        queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;
+        queuedFinal = dispatcher.sendFinalReply(deliveryReply) || queuedFinal;
       }
     }
 

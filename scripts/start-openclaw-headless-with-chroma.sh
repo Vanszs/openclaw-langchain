@@ -28,6 +28,30 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+start_detached() {
+  local log_file="$1"
+  shift
+  python3 - "$log_file" "$@" <<'PY'
+import subprocess
+import sys
+
+log_path = sys.argv[1]
+cmd = sys.argv[2:]
+
+with open(log_path, "ab", buffering=0) as log_file:
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+print(proc.pid)
+PY
+}
+
 run_cmd() {
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '[dry-run] '
@@ -178,9 +202,8 @@ if is_tcp_open "$CHROMA_HOST" "$CHROMA_PORT"; then
   log "chroma already listening on ${CHROMA_HOST}:${CHROMA_PORT}; skipping start"
 else
   log "starting chroma"
-  nohup chroma run --path "$CHROMA_DB_PATH" --host "$CHROMA_HOST" --port "$CHROMA_PORT" \
-    >"$CHROMA_LOG" 2>&1 &
-  echo "$!" >"$CHROMA_PID_FILE"
+  start_detached "$CHROMA_LOG" chroma run --path "$CHROMA_DB_PATH" --host "$CHROMA_HOST" --port "$CHROMA_PORT" \
+    >"$CHROMA_PID_FILE"
   wait_for_port "$CHROMA_HOST" "$CHROMA_PORT" "$START_TIMEOUT_SEC" || {
     tail -n 50 "$CHROMA_LOG" >&2 || true
     fail "chroma did not start within ${START_TIMEOUT_SEC}s"
@@ -197,9 +220,8 @@ fi
 
 if ! is_tcp_open "$GATEWAY_HOST" "$GATEWAY_PORT" || [[ "$FORCE_GATEWAY" == "1" ]]; then
   log "starting openclaw gateway"
-  nohup "${OPENCLAW_CMD[@]}" gateway run --bind "$GATEWAY_BIND" --port "$GATEWAY_PORT" --force \
-    >"$GATEWAY_LOG" 2>&1 &
-  echo "$!" >"$GATEWAY_PID_FILE"
+  start_detached "$GATEWAY_LOG" "${OPENCLAW_CMD[@]}" gateway run --bind "$GATEWAY_BIND" --port "$GATEWAY_PORT" --force \
+    >"$GATEWAY_PID_FILE"
   if ! wait_for_port "$GATEWAY_HOST" "$GATEWAY_PORT" "$START_TIMEOUT_SEC"; then
     tail -n 80 "$GATEWAY_LOG" >&2 || true
     fail "gateway did not start within ${START_TIMEOUT_SEC}s"

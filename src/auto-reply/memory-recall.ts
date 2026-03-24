@@ -11,6 +11,7 @@ import type {
   MemoryVectorProbeStatus,
 } from "../memory/types.js";
 import type { MsgContext } from "./templating.js";
+import type { ReplyPayload } from "./types.js";
 
 const TOOL_HINT_RE =
   /\b(memory_search|memory_get|knowledge_search|knowledge_get|history_search|history_get)\b/i;
@@ -32,6 +33,8 @@ const USER_MEMORY_SELF_RE =
   /\b(about\s+me|about\s+user|tentang\s+saya|tentang\s+aku|tentang\s+gue|tentang\s+gw|me|my|saya|aku|gue|gw)\b/i;
 const USER_MEMORY_NEGATIVE_RE =
   /\b(memory\s+usage|memory\s+leak|ram|heap|sqlite\s+index|database\s+index|create\s+an?\s+index|previous\s+error|prior\s+error)\b/i;
+const GENERIC_RAG_INVENTORY_RE =
+  /(?:\b(?:ada\s+apa\s+saja|apa\s+(?:isi|yang\s+ada)|what(?:'s| is)?\s+in|what\s+do\s+you\s+have|show)\b.*\b(?:rag|chroma(?:\s*db)?|vector(?:\s*db|\s*store)?|memory\s+(?:store|backend))\b)|(?:\b(?:rag|chroma(?:\s*db)?|vector(?:\s*db|\s*store)?|memory\s+(?:store|backend))\b.*\b(?:contents?|isi|inventory|daftar|list)\b)/i;
 const ROUTING_STRIP_RE =
   /\b(gunakan|pakai|use|please\s+use)\s+tool\s+(memory_search|memory_get|knowledge_search|knowledge_get|history_search|history_get)\b/gi;
 const TOOL_NAME_STRIP_RE =
@@ -50,16 +53,17 @@ export type DeterministicMemoryRecallContext = {
   domain: MemoryDomain;
   note: string;
   systemPromptHint: string;
+  directReply?: ReplyPayload;
 };
 
 type RetrievalIntent = {
   domain: MemoryDomain;
   routeLabel: string;
-  kind?: "recall" | "backend_status";
+  kind?: "recall" | "backend_status" | "inventory";
 };
 
 const BACKEND_STATUS_QUERY_RE =
-  /(?:\b(?:cek|check|status|probe|ping|apakah|is)\b.*\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b)|(?:\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b.*\b(?:cek|check|status|aktif|online|up|reachable|health|working|jalan|running|tersedia)\b)|(?:\b(?:is|apakah)\s+memory\s+(?:working|ready|up|available|aktif|jalan|tersedia)\b)/i;
+  /(?:\b(?:cek|check|status|probe|ping|apakah|is)\b.*\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b)|(?:\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b.*\b(?:cek|check|status|aktif|online|up|reachable|health|working|jalan|running|tersedia|connected|terhubung|accessible|akses)\b)|(?:\b(?:is|apakah)\s+memory\s+(?:working|ready|up|available|aktif|jalan|tersedia)\b)|(?:\b(?:bisa|can|could|dapat|able|apakah)\b.*\b(?:akses|access|query|reach|terhubung|connect(?:ed)?)\b.*\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b)|(?:\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b.*\b(?:bisa|can|could|dapat|accessible|reachable|terhubung)\b)/i;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -105,6 +109,18 @@ function isLikelyUserMemoryQuery(query: string): boolean {
   return USER_MEMORY_KEYWORD_RE.test(query) && USER_MEMORY_SELF_RE.test(query);
 }
 
+function isLikelyGenericRagInventoryQuery(query: string): boolean {
+  if (USER_MEMORY_NEGATIVE_RE.test(query)) {
+    return false;
+  }
+  return (
+    GENERIC_RAG_INVENTORY_RE.test(query) &&
+    !USER_MEMORY_SELF_RE.test(query) &&
+    !isLikelyKnowledgeQuery(query) &&
+    !isLikelyHistoryQuery(query)
+  );
+}
+
 function detectRetrievalIntent(query: string): RetrievalIntent | undefined {
   const normalized = normalizeWhitespace(query);
   if (!normalized) {
@@ -116,6 +132,13 @@ function detectRetrievalIntent(query: string): RetrievalIntent | undefined {
       domain: "user_memory",
       routeLabel: "memory-backend-status",
       kind: "backend_status",
+    };
+  }
+  if (isLikelyGenericRagInventoryQuery(lower)) {
+    return {
+      domain: "user_memory",
+      routeLabel: "rag-inventory",
+      kind: "inventory",
     };
   }
   if (TOOL_HINT_RE.test(lower)) {
@@ -244,11 +267,12 @@ function buildNote(params: {
 }
 
 function buildSystemPromptHint(intent: RetrievalIntent): string {
-  if (intent.kind === "backend_status") {
+  if (intent.kind === "backend_status" || intent.kind === "inventory") {
     return [
       "Deterministic memory backend status probing already ran for this turn.",
       "For questions about whether Chroma/RAG/vector memory is up, use the retrieved backend status block in the user prompt as authoritative.",
       "Do not invent connection failures, curl results, CORS issues, or backend health claims beyond that status block.",
+      "For general availability questions, keep the answer concise and do not expose raw store URLs, localhost addresses, or internal collection identifiers unless the user explicitly asks for diagnostics.",
     ].join(" ");
   }
   if (intent.domain === "user_memory") {
@@ -315,7 +339,7 @@ function buildBackendStatusNote(params: {
     lines.push(`Model: ${params.status.model}`);
   }
   if (params.status.dbPath) {
-    lines.push(`Store: ${params.status.dbPath}`);
+    lines.push("Store: configured");
   }
   const domainStatuses = Object.values(params.probe.domains ?? {});
   if (domainStatuses.length > 0) {
@@ -346,6 +370,96 @@ function buildBackendStatusNote(params: {
   }
   lines.push("Results: status-only probe");
   return lines.join("\n");
+}
+
+function normalizeBackendStatusLabel(domain: MemoryDomain): string {
+  if (domain === "user_memory") {
+    return "user memory";
+  }
+  if (domain === "docs_kb") {
+    return "docs KB";
+  }
+  return "history";
+}
+
+function summarizeBackendError(error?: string): string | undefined {
+  if (!error) {
+    return undefined;
+  }
+  const normalized = error.toLowerCase();
+  if (
+    normalized.includes("econnrefused") ||
+    normalized.includes("connectionerror") ||
+    normalized.includes("connect") ||
+    normalized.includes("fetch failed")
+  ) {
+    return "Koneksi ke backend RAG gagal.";
+  }
+  if (normalized.includes("timeout") || normalized.includes("timed out")) {
+    return "Backend RAG tidak merespons tepat waktu.";
+  }
+  if (normalized.includes("not found") || normalized.includes("404")) {
+    return "Koleksi RAG belum tersedia.";
+  }
+  return "Backend RAG sedang tidak siap.";
+}
+
+function buildBackendStatusDirectReply(params: {
+  intent: RetrievalIntent;
+  probe: MemoryVectorProbeStatus;
+}): ReplyPayload {
+  const state = resolveBackendProbeState(params.probe);
+  const domainStatuses = Object.values(params.probe.domains ?? {});
+  const readyLabels = domainStatuses
+    .filter((entry) => entry.available)
+    .map((entry) => normalizeBackendStatusLabel(entry.domain));
+  const failedLabels = domainStatuses
+    .filter((entry) => !entry.available)
+    .map((entry) => normalizeBackendStatusLabel(entry.domain));
+  const readyList = readyLabels.length > 0 ? readyLabels.join(", ") : "tidak ada";
+  const failedList = failedLabels.length > 0 ? failedLabels.join(", ") : undefined;
+  const genericError = summarizeBackendError(
+    params.probe.error ?? domainStatuses.find((entry) => entry.error)?.error,
+  );
+
+  if (params.intent.kind === "inventory") {
+    if (state.retrievalStatus === "backend-unavailable") {
+      return {
+        text: genericError
+          ? `Saat ini saya belum bisa menampilkan isi RAG. ${genericError}`
+          : "Saat ini saya belum bisa menampilkan isi RAG karena backend Chroma belum siap.",
+      };
+    }
+    return {
+      text: "RAG saya dibagi menjadi tiga domain: user memory, docs KB, dan history. Backend Chroma siap. Untuk menampilkan isi yang relevan, tanyakan domainnya secara spesifik, misalnya 'apa yang Anda simpan tentang saya', 'cari docs OpenClaw ...', atau 'apa yang saya bilang kemarin ...'.",
+    };
+  }
+
+  if (state.retrievalStatus === "backend-ready") {
+    return {
+      text:
+        readyLabels.length > 0
+          ? `Ya, saya bisa mengakses RAG. Backend Chroma siap dan domain yang dapat di-query saat ini: ${readyList}.`
+          : "Ya, saya bisa mengakses RAG. Backend Chroma siap.",
+    };
+  }
+
+  if (state.retrievalStatus === "backend-partial") {
+    const sentences = [`Saya bisa mengakses sebagian RAG. Domain yang aktif: ${readyList}.`];
+    if (failedList) {
+      sentences.push(`Domain yang bermasalah: ${failedList}.`);
+    }
+    if (genericError) {
+      sentences.push(genericError);
+    }
+    return { text: sentences.join(" ") };
+  }
+
+  return {
+    text: genericError
+      ? `Saat ini saya tidak bisa mengakses RAG. ${genericError}`
+      : "Saat ini saya tidak bisa mengakses RAG. Backend Chroma belum siap untuk di-query.",
+  };
 }
 
 export function shouldInjectDeterministicMemoryRecall(query: string): boolean {
@@ -415,7 +529,7 @@ export async function buildDeterministicMemoryRecallContext(params: {
     };
   }
 
-  if (intent.kind === "backend_status") {
+  if (intent.kind === "backend_status" || intent.kind === "inventory") {
     try {
       const probe = await getLiveVectorProbeStatus({ manager: memory.manager });
       const status = memory.manager.status();
@@ -428,21 +542,30 @@ export async function buildDeterministicMemoryRecallContext(params: {
           probe,
         }),
         systemPromptHint: buildSystemPromptHint(intent),
+        directReply: buildBackendStatusDirectReply({
+          intent,
+          probe,
+        }),
       };
     } catch (error) {
       const status = memory.manager.status();
+      const probe = {
+        available: false,
+        error: error instanceof Error ? error.message : String(error),
+      } satisfies MemoryVectorProbeStatus;
       return {
         domain: intent.domain,
         note: buildBackendStatusNote({
           intent,
           query: searchQuery,
           status,
-          probe: {
-            available: false,
-            error: error instanceof Error ? error.message : String(error),
-          },
+          probe,
         }),
         systemPromptHint: buildSystemPromptHint(intent),
+        directReply: buildBackendStatusDirectReply({
+          intent,
+          probe,
+        }),
       };
     }
   }

@@ -352,6 +352,7 @@ export async function runPreparedReply(
         domain: "user_memory" | "docs_kb" | "history" | "web_search";
         note: string;
         systemPromptHint: string;
+        directReply?: ReplyPayload;
       }
     | undefined;
   try {
@@ -430,6 +431,10 @@ export async function runPreparedReply(
     return {
       text: "I didn't receive any text in your message. Please resend or add a caption.",
     };
+  }
+  if (retrievalContext?.directReply) {
+    typing.cleanup();
+    return retrievalContext.directReply;
   }
   // When the user sends media without text, provide a minimal body so the agent
   // run proceeds and the image/document is injected by the embedded runner.
