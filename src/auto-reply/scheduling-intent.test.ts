@@ -14,6 +14,7 @@ vi.mock("../infra/outbound/channel-selection.js", () => ({
 }));
 
 import { buildDeterministicSchedulingContext } from "./scheduling-intent.js";
+import { resolvePendingSchedulingFollowup } from "./scheduling-intent.js";
 
 describe("buildDeterministicSchedulingContext", () => {
   beforeEach(() => {
@@ -40,6 +41,7 @@ describe("buildDeterministicSchedulingContext", () => {
       ctx: {
         OriginatingChannel: "telegram",
         OriginatingTo: "12345",
+        SessionKey: "agent:main:telegram:direct:12345",
       },
       query: "ingatkan saya 2 menit lagi untuk makan",
     });
@@ -47,6 +49,7 @@ describe("buildDeterministicSchedulingContext", () => {
     expect(result?.directReply.text).toContain("balas kembali ke chat ini");
     expect(result?.directReply.text).toContain("kirim ke webhook");
     expect(result?.directReply.text).toContain("simpan internal saja");
+    expect(result?.sessionPatch?.pendingSchedulingIntent?.kind).toBe("reminder");
   });
 
   it("routes periodic monitoring toward heartbeat clarification", async () => {
@@ -54,6 +57,7 @@ describe("buildDeterministicSchedulingContext", () => {
       cfg: { cron: { enabled: true } },
       ctx: {
         Surface: "webchat",
+        SessionKey: "main",
       },
       query: "cek email dan kalender tiap 30 menit",
     });
@@ -86,10 +90,84 @@ describe("buildDeterministicSchedulingContext", () => {
       ctx: {
         OriginatingChannel: "telegram",
         OriginatingTo: "12345",
+        SessionKey: "agent:main:telegram:direct:12345",
       },
       query: "ingatkan saya 2 menit lagi dan balas ke chat ini",
     });
 
-    expect(result).toBeUndefined();
+    expect(result?.resolvedSchedulingAction?.kind).toBe("cron.add");
+    expect(result?.clearPendingScheduling).toBe(true);
+  });
+
+  it("consumes pending reminder follow-up for same chat delivery", async () => {
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {
+        OriginatingChannel: "telegram",
+        OriginatingTo: "12345",
+      },
+      sessionKey: "agent:main:telegram:direct:12345",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "reminder",
+          rawRequest: "ingatkan 1 menit lagi untuk makan",
+          normalizedRequest: "ingatkan 1 menit lagi untuk makan",
+          schedule: {
+            mode: "relative",
+            delayMs: 60_000,
+            originalText: "1 menit lagi",
+          },
+          recommendedExecutor: "cron",
+          originatingRoute: {
+            channel: "telegram",
+            to: "12345",
+          },
+          allowedDeliveryChoices: ["same_chat", "configured_channel", "webhook", "internal"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      query: "balas chat saja",
+    });
+
+    expect(result?.resolvedSchedulingAction?.kind).toBe("cron.add");
+    expect(result?.resolvedSchedulingAction?.params.delivery).toMatchObject({
+      mode: "announce",
+      channel: "telegram",
+      to: "12345",
+    });
+    expect(result?.directReply?.text).toContain("di chat ini");
+  });
+
+  it("expires stale pending reminder follow-ups", async () => {
+    const result = await resolvePendingSchedulingFollowup({
+      cfg: { cron: { enabled: true } },
+      ctx: {},
+      sessionKey: "main",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        pendingSchedulingIntent: {
+          kind: "reminder",
+          rawRequest: "ingatkan 1 menit lagi",
+          normalizedRequest: "ingatkan 1 menit lagi",
+          schedule: {
+            mode: "relative",
+            delayMs: 60_000,
+            originalText: "1 menit lagi",
+          },
+          recommendedExecutor: "cron",
+          allowedDeliveryChoices: ["same_chat", "configured_channel", "webhook", "internal"],
+          createdAt: Date.now() - 20 * 60_000,
+          expiresAt: Date.now() - 1,
+        },
+      },
+      query: "balas chat saja",
+    });
+
+    expect(result?.clearPendingScheduling).toBe(true);
+    expect(result?.directReply?.text).toContain("kedaluwarsa");
   });
 });

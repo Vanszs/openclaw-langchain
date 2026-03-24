@@ -1,1 +1,4 @@
-export { buildDeterministicSchedulingContext } from "./scheduling-intent.js";
+export {
+  buildDeterministicSchedulingContext,
+  resolvePendingSchedulingFollowup,
+} from "./scheduling-intent.js";

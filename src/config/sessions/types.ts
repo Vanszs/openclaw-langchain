@@ -48,6 +48,56 @@ export type SessionAcpMeta = {
   lastError?: string;
 };
 
+export type PendingSchedulingKind = "reminder" | "periodic_monitoring";
+
+export type PendingSchedulingExecutor = "cron" | "heartbeat";
+
+export type PendingSchedulingSchedule =
+  | {
+      mode: "relative";
+      delayMs: number;
+      originalText: string;
+    }
+  | {
+      mode: "absolute";
+      at: string;
+      originalText: string;
+    }
+  | {
+      mode: "recurring";
+      everyMs: number;
+      originalText: string;
+    }
+  | {
+      mode: "unresolved";
+      originalText: string;
+    };
+
+export type PendingSchedulingRoute = {
+  channel?: string;
+  to?: string;
+  accountId?: string;
+  threadId?: string | number;
+};
+
+export type PendingSchedulingDeliveryChoice =
+  | "same_chat"
+  | "configured_channel"
+  | "webhook"
+  | "internal";
+
+export type PendingSchedulingIntent = {
+  kind: PendingSchedulingKind;
+  rawRequest: string;
+  normalizedRequest: string;
+  schedule: PendingSchedulingSchedule;
+  recommendedExecutor: PendingSchedulingExecutor;
+  originatingRoute?: PendingSchedulingRoute;
+  allowedDeliveryChoices: PendingSchedulingDeliveryChoice[];
+  createdAt: number;
+  expiresAt: number;
+};
+
 export type AcpSessionRuntimeOptions = {
   /**
    * ACP runtime mode set via session/set_mode (for example: "plan", "normal", "auto").
@@ -179,6 +229,7 @@ export type SessionEntry = {
   lastTo?: string;
   lastAccountId?: string;
   lastThreadId?: string | number;
+  pendingSchedulingIntent?: PendingSchedulingIntent;
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
   acp?: SessionAcpMeta;

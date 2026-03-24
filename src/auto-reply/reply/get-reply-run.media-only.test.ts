@@ -97,6 +97,7 @@ vi.mock("../self-facts.runtime.js", () => ({
 
 vi.mock("../scheduling-intent.runtime.js", () => ({
   buildDeterministicSchedulingContext: vi.fn().mockResolvedValue(undefined),
+  resolvePendingSchedulingFollowup: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../memory-save.js", () => ({
@@ -146,6 +147,7 @@ import { buildAttachmentRetrievalContextNote } from "../attachment-rag.js";
 import { buildDeterministicMemoryRecallContext } from "../memory-recall.js";
 import { maybeHandleDeterministicMemorySave } from "../memory-save.js";
 import { buildDeterministicSchedulingContext } from "../scheduling-intent.runtime.js";
+import { resolvePendingSchedulingFollowup } from "../scheduling-intent.runtime.js";
 import { buildDeterministicSelfReplyContext } from "../self-facts.runtime.js";
 import { runReplyAgent } from "./agent-runner.js";
 import { runPreparedReply } from "./get-reply-run.js";
@@ -379,6 +381,35 @@ describe("runPreparedReply media-only handling", () => {
     expect(result).toEqual({
       text: "Bisa, tetapi saya perlu target pengingatnya terlebih dulu. Pilih salah satu: balas kembali ke chat ini, kirim ke webhook, simpan internal saja.",
     });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("returns deterministic scheduling follow-up replies before self facts or the agent", async () => {
+    vi.mocked(resolvePendingSchedulingFollowup).mockResolvedValueOnce({
+      directReply: {
+        text: "Siap, saya akan mengingatkan kembali di chat ini dalam 1 menit.",
+      },
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "balas chat saja",
+          RawBody: "balas chat saja",
+          CommandBody: "balas chat saja",
+        },
+        sessionCtx: {
+          Body: "balas chat saja",
+          BodyStripped: "balas chat saja",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      text: "Siap, saya akan mengingatkan kembali di chat ini dalam 1 menit.",
+    });
+    expect(vi.mocked(buildDeterministicSelfReplyContext)).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 

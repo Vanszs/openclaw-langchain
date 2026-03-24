@@ -55,6 +55,61 @@ describe("buildDeterministicSelfReplyContext", () => {
     );
   });
 
+  it("handles short orchestra status phrasing without the word model", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openrouter/openai/gpt-oss-120b",
+            },
+          },
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "apa anda memakai orkestra?",
+    });
+
+    expect(result?.directReply.text).toBe("Ya. Untuk teks saya memakai gpt-oss-120b.");
+  });
+
+  it("handles typo-tolerant orchestra questions", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openrouter/openai/gpt-oss-120b",
+            },
+          },
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "apakah anda memakai orchesctra model ai?",
+    });
+
+    expect(result?.directReply.text).toBe("Untuk teks saya memakai gpt-oss-120b.");
+  });
+
+  it("answers Gmail and Calendar capabilities separately", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        hooks: {
+          enabled: true,
+          gmail: {
+            account: "bevansatriaa@gmail.com",
+          },
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "apakah anda terhubung dengan gmail untuk membuat calendar?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Gmail didukung dan saat ini sudah dikonfigurasi untuk bevansatriaa@gmail.com. Google Calendar tidak terdeteksi sebagai integrasi aktif di runtime ini.",
+    );
+  });
+
   it("returns undefined for unrelated questions", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },

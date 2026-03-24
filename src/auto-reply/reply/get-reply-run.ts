@@ -8,6 +8,7 @@ import {
   isEmbeddedPiRunStreaming,
   resolveEmbeddedSessionLane,
 } from "../../agents/pi-embedded.js";
+import { callGatewayTool } from "../../agents/tools/gateway.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   resolveGroupSessionKey,
@@ -54,6 +55,17 @@ import { appendUntrustedContext } from "./untrusted-context.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
+
+type DeterministicSchedulingOutcome = {
+  directReply?: ReplyPayload;
+  sessionPatch?: Partial<SessionEntry>;
+  clearPendingScheduling?: boolean;
+  resolvedSchedulingAction?: {
+    kind: "cron.add";
+    params: Record<string, unknown>;
+    confirmationText: string;
+  };
+};
 
 function normalizeSummaryToken(value: string, maxChars = 80): string {
   const cleaned = value.replace(/\s+/g, " ").trim();
@@ -201,6 +213,105 @@ async function sendResetSessionNotice(params: {
     threadId: params.threadId,
     cfg: params.cfg,
   });
+}
+
+async function applySessionPatch(params: {
+  patch?: Partial<SessionEntry>;
+  clearPendingScheduling?: boolean;
+  storePath?: string;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey: string;
+  sessionEntry?: SessionEntry;
+}): Promise<SessionEntry | undefined> {
+  const nextPatch: Partial<SessionEntry> = { ...params.patch };
+  if (params.clearPendingScheduling) {
+    nextPatch.pendingSchedulingIntent = undefined;
+  }
+  if (!Object.keys(nextPatch).length) {
+    return params.sessionEntry;
+  }
+  if (!params.storePath || !params.sessionStore) {
+    return params.sessionEntry ? { ...params.sessionEntry, ...nextPatch } : undefined;
+  }
+  const persisted = await updateSessionStore(params.storePath, (store) => {
+    const current = store[params.sessionKey] ?? params.sessionEntry ?? undefined;
+    const next = {
+      ...(current ?? {
+        sessionId: crypto.randomUUID(),
+        updatedAt: Date.now(),
+      }),
+      ...nextPatch,
+    };
+    if (params.clearPendingScheduling) {
+      delete next.pendingSchedulingIntent;
+    }
+    store[params.sessionKey] = next;
+    return next;
+  });
+  params.sessionStore[params.sessionKey] = persisted;
+  return persisted;
+}
+
+async function executeDeterministicSchedulingOutcome(params: {
+  outcome: DeterministicSchedulingOutcome;
+  storePath?: string;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey: string;
+  sessionEntry?: SessionEntry;
+}): Promise<{ reply?: ReplyPayload; sessionEntry?: SessionEntry }> {
+  let sessionEntry = await applySessionPatch({
+    patch: params.outcome.sessionPatch,
+    clearPendingScheduling: false,
+    storePath: params.storePath,
+    sessionStore: params.sessionStore,
+    sessionKey: params.sessionKey,
+    sessionEntry: params.sessionEntry,
+  });
+
+  if (params.outcome.resolvedSchedulingAction) {
+    try {
+      await callGatewayTool("cron.add", {}, params.outcome.resolvedSchedulingAction.params);
+      sessionEntry = await applySessionPatch({
+        clearPendingScheduling: params.outcome.clearPendingScheduling,
+        storePath: params.storePath,
+        sessionStore: params.sessionStore,
+        sessionKey: params.sessionKey,
+        sessionEntry,
+      });
+      return {
+        reply: params.outcome.directReply ?? {
+          text: params.outcome.resolvedSchedulingAction.confirmationText,
+        },
+        sessionEntry,
+      };
+    } catch (error) {
+      sessionEntry = await applySessionPatch({
+        clearPendingScheduling: true,
+        storePath: params.storePath,
+        sessionStore: params.sessionStore,
+        sessionKey: params.sessionKey,
+        sessionEntry,
+      });
+      return {
+        reply: {
+          text: `Saya gagal menjadwalkan permintaan itu: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        sessionEntry,
+      };
+    }
+  }
+
+  sessionEntry = await applySessionPatch({
+    clearPendingScheduling: params.outcome.clearPendingScheduling,
+    storePath: params.storePath,
+    sessionStore: params.sessionStore,
+    sessionKey: params.sessionKey,
+    sessionEntry,
+  });
+  return {
+    reply: params.outcome.directReply,
+    sessionEntry,
+  };
 }
 
 type RunPreparedReplyParams = {
@@ -356,6 +467,34 @@ export async function runPreparedReply(
       }
     | undefined;
   try {
+    const { resolvePendingSchedulingFollowup } = await import("../scheduling-intent.runtime.js");
+    const pendingSchedulingReply = await resolvePendingSchedulingFollowup({
+      cfg,
+      ctx,
+      sessionEntry,
+      sessionKey,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+    });
+    if (pendingSchedulingReply) {
+      const executed = await executeDeterministicSchedulingOutcome({
+        outcome: pendingSchedulingReply as DeterministicSchedulingOutcome,
+        storePath,
+        sessionStore,
+        sessionKey,
+        sessionEntry,
+      });
+      sessionEntry = executed.sessionEntry;
+      if (executed.reply) {
+        typing.cleanup();
+        return executed.reply;
+      }
+    }
+  } catch (error) {
+    logVerbose(
+      `scheduling-intent-followup: failed, continuing without deterministic follow-up reply: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
     const { buildDeterministicSelfReplyContext } = await import("../self-facts.runtime.js");
     const selfReply = await buildDeterministicSelfReplyContext({
       cfg,
@@ -379,8 +518,18 @@ export async function runPreparedReply(
       query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
     });
     if (schedulingReply) {
-      typing.cleanup();
-      return schedulingReply.directReply;
+      const executed = await executeDeterministicSchedulingOutcome({
+        outcome: schedulingReply as DeterministicSchedulingOutcome,
+        storePath,
+        sessionStore,
+        sessionKey,
+        sessionEntry,
+      });
+      sessionEntry = executed.sessionEntry;
+      if (executed.reply) {
+        typing.cleanup();
+        return executed.reply;
+      }
     }
   } catch (error) {
     logVerbose(
