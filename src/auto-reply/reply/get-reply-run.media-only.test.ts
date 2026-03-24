@@ -91,6 +91,14 @@ vi.mock("../web-search-recall.runtime.js", () => ({
   buildDeterministicWebSearchContext: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../self-facts.runtime.js", () => ({
+  buildDeterministicSelfReplyContext: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../scheduling-intent.runtime.js", () => ({
+  buildDeterministicSchedulingContext: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../memory-save.js", () => ({
   maybeHandleDeterministicMemorySave: vi.fn().mockResolvedValue(undefined),
 }));
@@ -137,6 +145,8 @@ vi.mock("./typing-mode.js", () => ({
 import { buildAttachmentRetrievalContextNote } from "../attachment-rag.js";
 import { buildDeterministicMemoryRecallContext } from "../memory-recall.js";
 import { maybeHandleDeterministicMemorySave } from "../memory-save.js";
+import { buildDeterministicSchedulingContext } from "../scheduling-intent.runtime.js";
+import { buildDeterministicSelfReplyContext } from "../self-facts.runtime.js";
 import { runReplyAgent } from "./agent-runner.js";
 import { runPreparedReply } from "./get-reply-run.js";
 import { routeReply } from "./route-reply.js";
@@ -314,6 +324,62 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.summaryLine).toContain("domain=user_memory");
     expect(call?.followupRun.summaryLine).toContain("status=ok (1 result)");
     expect(call?.followupRun.summaryLine).toContain("query=about user favorit database");
+  });
+
+  it("returns deterministic self identity replies without running the agent", async () => {
+    vi.mocked(buildDeterministicSelfReplyContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Saya Hypatia.",
+      },
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "siapa anda?",
+          RawBody: "siapa anda?",
+          CommandBody: "siapa anda?",
+        },
+        sessionCtx: {
+          Body: "siapa anda?",
+          BodyStripped: "siapa anda?",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      text: "Saya Hypatia.",
+    });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("returns deterministic scheduling clarifications without running the agent", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Bisa, tetapi saya perlu target pengingatnya terlebih dulu. Pilih salah satu: balas kembali ke chat ini, kirim ke webhook, simpan internal saja.",
+      },
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "ingatkan saya 2 menit lagi",
+          RawBody: "ingatkan saya 2 menit lagi",
+          CommandBody: "ingatkan saya 2 menit lagi",
+        },
+        sessionCtx: {
+          Body: "ingatkan saya 2 menit lagi",
+          BodyStripped: "ingatkan saya 2 menit lagi",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      text: "Bisa, tetapi saya perlu target pengingatnya terlebih dulu. Pilih salah satu: balas kembali ke chat ini, kirim ke webhook, simpan internal saja.",
+    });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 
   it("returns deterministic backend status replies without running the agent", async () => {

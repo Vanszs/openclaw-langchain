@@ -356,6 +356,38 @@ export async function runPreparedReply(
       }
     | undefined;
   try {
+    const { buildDeterministicSelfReplyContext } = await import("../self-facts.runtime.js");
+    const selfReply = await buildDeterministicSelfReplyContext({
+      cfg,
+      workspaceDir,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+    });
+    if (selfReply) {
+      typing.cleanup();
+      return selfReply.directReply;
+    }
+  } catch (error) {
+    logVerbose(
+      `self-facts: failed, continuing without deterministic self reply: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    const { buildDeterministicSchedulingContext } = await import("../scheduling-intent.runtime.js");
+    const schedulingReply = await buildDeterministicSchedulingContext({
+      cfg,
+      ctx,
+      query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+    });
+    if (schedulingReply) {
+      typing.cleanup();
+      return schedulingReply.directReply;
+    }
+  } catch (error) {
+    logVerbose(
+      `scheduling-intent: failed, continuing without deterministic scheduling reply: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
     const { buildDeterministicWebSearchContext } = await import("../web-search-recall.runtime.js");
     retrievalContext = await buildDeterministicWebSearchContext({
       cfg,
