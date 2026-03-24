@@ -124,4 +124,37 @@ describe("promptMemoryConfig", () => {
     expect(prompter.select).toHaveBeenCalledTimes(2);
     expect(prompter.text).toHaveBeenCalledTimes(3);
   });
+
+  it("prefills the chroma prompt from OPENCLAW_CHROMA_URL when config is missing", async () => {
+    const previous = process.env.OPENCLAW_CHROMA_URL;
+    process.env.OPENCLAW_CHROMA_URL = "http://127.0.0.1:8889";
+    try {
+      const prompter = createPrompter({
+        selectValues: ["memory-langchain", "prefer_session", "openai"],
+        textValues: [
+          "memory, repo, docs",
+          "/workspace",
+          "",
+          "http://127.0.0.1:8889",
+          "openclaw",
+          "text-embedding-3-small",
+          "",
+        ],
+      });
+
+      await promptMemoryConfig({}, "/workspace", prompter);
+
+      const textMock = prompter.text as unknown as ReturnType<typeof vi.fn>;
+      expect(textMock.mock.calls[3]?.[0]).toMatchObject({
+        message: "Chroma URL",
+        initialValue: "http://127.0.0.1:8889",
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_CHROMA_URL;
+      } else {
+        process.env.OPENCLAW_CHROMA_URL = previous;
+      }
+    }
+  });
 });

@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
 import {
   applyMemoryConfig,
+  resolveConfiguredChromaUrl,
   findInvalidMemorySources,
   parseDelimitedList,
   parseMemorySourceList,
@@ -185,10 +186,7 @@ export async function promptMemoryConfig(
   const chromaUrl = String(
     (await prompter.text({
       message: "Chroma URL",
-      initialValue:
-        typeof currentLangchain.chromaUrl === "string"
-          ? currentLangchain.chromaUrl
-          : "http://127.0.0.1:8000",
+      initialValue: resolveConfiguredChromaUrl(currentLangchain.chromaUrl),
     })) ?? "",
   ).trim();
 
@@ -227,7 +225,7 @@ export async function promptMemoryConfig(
   return applyMemoryConfig(nextConfig, {
     backend,
     workspaceDir,
-    chromaUrl: chromaUrl || "http://127.0.0.1:8000",
+    chromaUrl: chromaUrl || undefined,
     collectionPrefix: collectionPrefix || "openclaw",
     embeddingProvider,
     embeddingModel: embeddingModel || "text-embedding-3-small",

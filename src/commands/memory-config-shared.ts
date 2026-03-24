@@ -6,6 +6,8 @@ export type MemoryBackendSelection = "memory-core" | "memory-langchain" | "none"
 export type MemoryRecallScope = "global" | "session" | "prefer_session";
 export type MemorySourceSelection = NonNullable<MemorySearchConfig["sources"]>[number];
 
+export const DEFAULT_CHROMA_URL = "http://127.0.0.1:8000";
+
 export type MemoryConfigInput = {
   backend: MemoryBackendSelection;
   workspaceDir: string;
@@ -28,6 +30,21 @@ export function parseDelimitedList(input: string | undefined): string[] {
     .split(/[\n,]/)
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function normalizeOptionalString(input: string | undefined): string | undefined {
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const trimmed = input.trim();
+  return trimmed || undefined;
+}
+
+export function resolveConfiguredChromaUrl(currentValue?: unknown): string {
+  const configured =
+    typeof currentValue === "string" && currentValue.trim() ? currentValue.trim() : undefined;
+  const envValue = normalizeOptionalString(process.env.OPENCLAW_CHROMA_URL);
+  return configured || envValue || DEFAULT_CHROMA_URL;
 }
 
 const MEMORY_SOURCE_SET = new Set<MemorySourceSelection>([
@@ -125,6 +142,8 @@ export function applyMemoryConfig(
 
   const currentLangchain = (slotConfig.plugins?.entries?.["memory-langchain"]?.config ??
     {}) satisfies Record<string, unknown>;
+  const requestedChromaUrl = normalizeOptionalString(input.chromaUrl);
+  const chromaUrl = requestedChromaUrl ?? resolveConfiguredChromaUrl(currentLangchain.chromaUrl);
 
   return {
     ...slotConfig,
@@ -137,7 +156,7 @@ export function applyMemoryConfig(
           enabled: true,
           config: {
             ...currentLangchain,
-            chromaUrl: input.chromaUrl || "http://127.0.0.1:8000",
+            chromaUrl,
             collectionPrefix: input.collectionPrefix || "openclaw",
             embeddingProvider: input.embeddingProvider === "openrouter" ? "openrouter" : "openai",
             embeddingModel: input.embeddingModel || "text-embedding-3-small",

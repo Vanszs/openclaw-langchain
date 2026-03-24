@@ -61,6 +61,8 @@ const DEFAULT_SOURCES: LangchainMemorySource[] = [
   "sessions",
 ];
 
+const DEFAULT_CHROMA_URL = "http://127.0.0.1:8000";
+
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return fallback;
@@ -161,6 +163,7 @@ function resolveLangchainPluginStorageStateInternal(params: {
   env?: NodeJS.ProcessEnv;
 }): LangchainPluginStorageState {
   const stateDir = resolveStateDir(params.env ?? process.env, os.homedir);
+  const env = params.env ?? process.env;
   const raw = (params.cfg.plugins?.entries?.[LANGCHAIN_MEMORY_PLUGIN_ID]?.config ?? {}) as Record<
     string,
     unknown
@@ -174,7 +177,10 @@ function resolveLangchainPluginStorageStateInternal(params: {
   const baseDir = path.dirname(queueDir);
 
   return {
-    chromaUrl: normalizeString(raw.chromaUrl, "http://127.0.0.1:8000"),
+    chromaUrl: normalizeString(
+      raw.chromaUrl,
+      normalizeString(env.OPENCLAW_CHROMA_URL, DEFAULT_CHROMA_URL),
+    ),
     collectionPrefix: normalizeString(raw.collectionPrefix, "openclaw"),
     embeddingProvider: normalizeString(raw.embeddingProvider, "openai").toLowerCase(),
     embeddingModel: normalizeString(raw.embeddingModel, "text-embedding-3-small"),

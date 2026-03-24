@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveLangchainCollectionName } from "./config.js";
+import { resolveLangchainCollectionName, resolveLangchainPluginStorageState } from "./config.js";
 
 describe("resolveLangchainCollectionName", () => {
   it("splits collection names by domain", () => {
@@ -24,5 +24,19 @@ describe("resolveLangchainCollectionName", () => {
         domain: "history",
       }),
     ).toBe("openclaw-main-history");
+  });
+});
+
+describe("resolveLangchainPluginStorageState", () => {
+  it("uses OPENCLAW_CHROMA_URL when plugin config omits chromaUrl", () => {
+    const result = resolveLangchainPluginStorageState({
+      cfg: {},
+      env: {
+        OPENCLAW_CHROMA_URL: "http://127.0.0.1:8889",
+        HOME: "/tmp/home",
+      },
+    });
+
+    expect(result.chromaUrl).toBe("http://127.0.0.1:8889");
   });
 });

@@ -109,6 +109,16 @@ pnpm gateway:watch
 
 Note: `pnpm openclaw ...` runs TypeScript directly (via `tsx`). `pnpm build` produces `dist/` for running via Node / the packaged `openclaw` binary.
 
+For a headless Linux/VPS-style source checkout with local Chroma and no dashboard/browser session, use:
+
+```bash
+OPENCLAW_START_DRY_RUN=1 ./scripts/start-openclaw-headless-with-chroma.sh
+./scripts/start-openclaw-headless-with-chroma.sh
+```
+
+That script reads `~/.openclaw/openclaw.json`, starts a local Chroma server for `memory-langchain`, and starts the Gateway without opening the Control UI. It expects a `chroma` binary on `PATH`.
+If you need to pin a non-default Chroma endpoint during setup or onboarding, set `OPENCLAW_CHROMA_URL` before running the script or memory configuration commands.
+
 ## Security defaults (DM access)
 
 OpenClaw connects to real messaging surfaces. Treat inbound DMs as **untrusted input**.
@@ -128,7 +138,7 @@ Run `openclaw doctor` to surface risky/misconfigured DM policies.
 - **[Local-first Gateway](https://docs.openclaw.ai/gateway)** — single control plane for sessions, channels, tools, and events.
 - **[Multi-channel inbox](https://docs.openclaw.ai/channels)** — WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, BlueBubbles (iMessage), iMessage (legacy), IRC, Microsoft Teams, Matrix, Feishu, LINE, Mattermost, Nextcloud Talk, Nostr, Synology Chat, Tlon, Twitch, Zalo, Zalo Personal, WebChat, macOS, iOS/Android.
 - **[Multi-agent routing](https://docs.openclaw.ai/gateway/configuration)** — route inbound channels/accounts/peers to isolated agents (workspaces + per-agent sessions).
-- **[Memory plugins](https://docs.openclaw.ai/concepts/memory)** — keep the existing `memory_search`, `memory_get`, and `openclaw memory` UX while selecting the active backend via `plugins.slots.memory`. Use `memory-core` by default or switch to LangChain + Chroma with `memory-langchain`.
+- **[Memory plugins](https://docs.openclaw.ai/concepts/memory)** — keep the `openclaw memory` UX while selecting the active backend via `plugins.slots.memory`. Domain-aware retrieval is split into `memory_search/get` (user facts), `knowledge_search/get` (saved docs and knowledge), and `history_search/get` (transcript history). Use `memory-core` by default or switch to LangChain + Chroma with `memory-langchain`.
 - **[Voice Wake](https://docs.openclaw.ai/nodes/voicewake) + [Talk Mode](https://docs.openclaw.ai/nodes/talk)** — wake words on macOS/iOS and continuous voice on Android (ElevenLabs + system TTS fallback).
 - **[Live Canvas](https://docs.openclaw.ai/platforms/mac/canvas)** — agent-driven visual workspace with [A2UI](https://docs.openclaw.ai/platforms/mac/canvas#canvas-a2ui).
 - **[First-class tools](https://docs.openclaw.ai/tools)** — browser, canvas, nodes, cron, sessions, and Discord/Slack actions.
@@ -315,6 +325,9 @@ Runbook: [iOS connect](https://docs.openclaw.ai/platforms/ios).
 
 - Workspace root: `~/.openclaw/workspace` (configurable via `agents.defaults.workspace`).
 - Injected prompt files: `AGENTS.md`, `SOUL.md`, `TOOLS.md`.
+- Canonical user memory lives under `memory/facts/<namespace>/<fact-id>.json`.
+- Canonical saved docs / knowledge notes live under `memory/knowledge/<doc-id>.v<version>.md` plus sidecar metadata.
+- Daily `memory/YYYY-MM-DD*.md` files remain journal/audit notes, not the canonical mutable memory store.
 - Skills: `~/.openclaw/workspace/skills/<skill>/SKILL.md`.
 
 ## Configuration
@@ -323,8 +336,12 @@ Minimal `~/.openclaw/openclaw.json` (model + defaults):
 
 ```json5
 {
-  agent: {
-    model: "anthropic/claude-opus-4-6",
+  agents: {
+    defaults: {
+      model: {
+        primary: "openai/gpt-5.4",
+      },
+    },
   },
 }
 ```
@@ -338,6 +355,13 @@ Memory / RAG backends:
 - LangChain + Chroma backend: `plugins.slots.memory = "memory-langchain"`
 
 With `memory-langchain`, OpenClaw still owns the gateway, sessions, channels, agent loop, model fallback, and subagents. LangChain.js is used only for ingest, chunking, embeddings, Chroma storage, and retrieval.
+
+Retrieval boundaries:
+
+- `memory_search` / `memory_get`: canonical user memory
+- `knowledge_search` / `knowledge_get`: saved docs, research notes, imported knowledge
+- `history_search` / `history_get`: prior transcript/session history
+- attachment OCR/file extraction stays transient by default unless the user explicitly saves it
 
 Details:
 

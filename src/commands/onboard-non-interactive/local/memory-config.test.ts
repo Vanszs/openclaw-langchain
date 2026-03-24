@@ -67,6 +67,38 @@ describe("applyNonInteractiveMemoryConfig", () => {
     });
   });
 
+  it("preserves the existing chromaUrl when onboarding rewrites langchain config", () => {
+    const runtime = createRuntime();
+    const nextConfig: OpenClawConfig = {
+      plugins: {
+        entries: {
+          "memory-langchain": {
+            enabled: true,
+            config: {
+              chromaUrl: "http://127.0.0.1:8889",
+            },
+          },
+        },
+      },
+    };
+
+    const result = applyNonInteractiveMemoryConfig({
+      nextConfig,
+      opts: {
+        memoryBackend: "memory-langchain",
+        memoryEmbeddingProvider: "openrouter",
+      },
+      workspaceDir: "/workspace",
+      runtime,
+    });
+
+    expect(result?.plugins?.slots?.memory).toBe("memory-langchain");
+    expect(result?.plugins?.entries?.["memory-langchain"]?.config).toMatchObject({
+      chromaUrl: "http://127.0.0.1:8889",
+      embeddingProvider: "openrouter",
+    });
+  });
+
   it("rejects invalid memory source tokens", () => {
     const runtime = createRuntime();
     const result = applyNonInteractiveMemoryConfig({
