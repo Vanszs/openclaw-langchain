@@ -21,6 +21,47 @@ function cronAgentTurnPayloadSchema(params: { message: TSchema }) {
   );
 }
 
+function cronHttpActionPayloadSchema(params: { url: TSchema }) {
+  return Type.Object(
+    {
+      kind: Type.Literal("httpAction"),
+      request: Type.Object(
+        {
+          method: Type.Union([
+            Type.Literal("GET"),
+            Type.Literal("POST"),
+            Type.Literal("PUT"),
+            Type.Literal("PATCH"),
+            Type.Literal("DELETE"),
+          ]),
+          url: params.url,
+          headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+          body: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+      success: Type.Optional(
+        Type.Object(
+          {
+            whenStatus: Type.Optional(Type.Union([Type.Literal("2xx"), Type.Literal("any")])),
+            summaryText: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+      failure: Type.Optional(
+        Type.Object(
+          {
+            summaryText: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    },
+    { additionalProperties: false },
+  );
+}
+
 const CronSessionTargetSchema = Type.Union([
   Type.Literal("main"),
   Type.Literal("isolated"),
@@ -139,6 +180,7 @@ export const CronPayloadSchema = Type.Union([
     { additionalProperties: false },
   ),
   cronAgentTurnPayloadSchema({ message: NonEmptyString }),
+  cronHttpActionPayloadSchema({ url: NonEmptyString }),
 ]);
 
 export const CronPayloadPatchSchema = Type.Union([
@@ -150,6 +192,48 @@ export const CronPayloadPatchSchema = Type.Union([
     { additionalProperties: false },
   ),
   cronAgentTurnPayloadSchema({ message: Type.Optional(NonEmptyString) }),
+  Type.Object(
+    {
+      kind: Type.Literal("httpAction"),
+      request: Type.Optional(
+        Type.Object(
+          {
+            method: Type.Optional(
+              Type.Union([
+                Type.Literal("GET"),
+                Type.Literal("POST"),
+                Type.Literal("PUT"),
+                Type.Literal("PATCH"),
+                Type.Literal("DELETE"),
+              ]),
+            ),
+            url: Type.Optional(NonEmptyString),
+            headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+            body: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+      success: Type.Optional(
+        Type.Object(
+          {
+            whenStatus: Type.Optional(Type.Union([Type.Literal("2xx"), Type.Literal("any")])),
+            summaryText: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+      failure: Type.Optional(
+        Type.Object(
+          {
+            summaryText: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    },
+    { additionalProperties: false },
+  ),
 ]);
 
 export const CronFailureAlertSchema = Type.Object(
@@ -177,6 +261,8 @@ export const CronFailureDestinationSchema = Type.Object(
 const CronDeliverySharedProperties = {
   channel: Type.Optional(Type.Union([Type.Literal("last"), NonEmptyString])),
   accountId: Type.Optional(NonEmptyString),
+  threadId: Type.Optional(Type.Union([Type.String(), Type.Integer()])),
+  replyToId: Type.Optional(NonEmptyString),
   bestEffort: Type.Optional(Type.Boolean()),
   failureDestination: Type.Optional(CronFailureDestinationSchema),
 };

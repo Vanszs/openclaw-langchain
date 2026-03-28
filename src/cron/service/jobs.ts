@@ -139,8 +139,10 @@ export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "pay
   if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
-  if (isIsolatedLike && job.payload.kind !== "agentTurn") {
-    throw new Error('isolated/current/session cron jobs require payload.kind="agentTurn"');
+  if (isIsolatedLike && job.payload.kind !== "agentTurn" && job.payload.kind !== "httpAction") {
+    throw new Error(
+      'isolated/current/session cron jobs require payload.kind="agentTurn" or "httpAction"',
+    );
   }
 }
 
@@ -158,7 +160,7 @@ function assertMainSessionAgentId(
   const normalizedDefault = normalizeAgentId(defaultAgentId);
   if (normalized !== normalizedDefault) {
     throw new Error(
-      `cron: sessionTarget "main" is only valid for the default agent. Use sessionTarget "isolated" with payload.kind "agentTurn" for non-default agents (agentId: ${job.agentId})`,
+      `cron: sessionTarget "main" is only valid for the default agent. Use sessionTarget "isolated" with payload.kind "agentTurn" or "httpAction" for non-default agents (agentId: ${job.agentId})`,
     );
   }
 }
@@ -669,40 +671,82 @@ function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronP
     return { kind: "systemEvent", text };
   }
 
-  if (existing.kind !== "agentTurn") {
-    return buildPayloadFromPatch(patch);
+  if (existing.kind === "agentTurn") {
+    const agentTurnPatch = patch as Extract<CronPayloadPatch, { kind: "agentTurn" }>;
+    const next: Extract<CronPayload, { kind: "agentTurn" }> = { ...existing };
+    if (typeof agentTurnPatch.message === "string") {
+      next.message = agentTurnPatch.message;
+    }
+    if (typeof agentTurnPatch.model === "string") {
+      next.model = agentTurnPatch.model;
+    }
+    if (typeof agentTurnPatch.thinking === "string") {
+      next.thinking = agentTurnPatch.thinking;
+    }
+    if (typeof agentTurnPatch.timeoutSeconds === "number") {
+      next.timeoutSeconds = agentTurnPatch.timeoutSeconds;
+    }
+    if (typeof agentTurnPatch.lightContext === "boolean") {
+      next.lightContext = agentTurnPatch.lightContext;
+    }
+    if (typeof agentTurnPatch.allowUnsafeExternalContent === "boolean") {
+      next.allowUnsafeExternalContent = agentTurnPatch.allowUnsafeExternalContent;
+    }
+    if (typeof agentTurnPatch.deliver === "boolean") {
+      next.deliver = agentTurnPatch.deliver;
+    }
+    if (typeof agentTurnPatch.channel === "string") {
+      next.channel = agentTurnPatch.channel;
+    }
+    if (typeof agentTurnPatch.to === "string") {
+      next.to = agentTurnPatch.to;
+    }
+    if (typeof agentTurnPatch.bestEffortDeliver === "boolean") {
+      next.bestEffortDeliver = agentTurnPatch.bestEffortDeliver;
+    }
+    return next;
   }
 
-  const next: Extract<CronPayload, { kind: "agentTurn" }> = { ...existing };
-  if (typeof patch.message === "string") {
-    next.message = patch.message;
+  const httpActionPatch = patch as Extract<CronPayloadPatch, { kind: "httpAction" }>;
+  const existingHttpAction = existing as Extract<CronPayload, { kind: "httpAction" }>;
+  const next: Extract<CronPayload, { kind: "httpAction" }> = {
+    ...existingHttpAction,
+    request: {
+      ...existingHttpAction.request,
+    },
+  };
+  if (httpActionPatch.request) {
+    if (typeof httpActionPatch.request.method === "string") {
+      next.request.method = httpActionPatch.request.method;
+    }
+    if (typeof httpActionPatch.request.url === "string") {
+      next.request.url = httpActionPatch.request.url.trim();
+    }
+    if ("headers" in httpActionPatch.request) {
+      next.request.headers = httpActionPatch.request.headers
+        ? { ...httpActionPatch.request.headers }
+        : undefined;
+    }
+    if ("body" in httpActionPatch.request) {
+      next.request.body =
+        typeof httpActionPatch.request.body === "string" ? httpActionPatch.request.body : undefined;
+    }
   }
-  if (typeof patch.model === "string") {
-    next.model = patch.model;
+  if ("success" in httpActionPatch) {
+    next.success = httpActionPatch.success
+      ? {
+          ...existingHttpAction.success,
+          ...httpActionPatch.success,
+        }
+      : undefined;
   }
-  if (typeof patch.thinking === "string") {
-    next.thinking = patch.thinking;
-  }
-  if (typeof patch.timeoutSeconds === "number") {
-    next.timeoutSeconds = patch.timeoutSeconds;
-  }
-  if (typeof patch.lightContext === "boolean") {
-    next.lightContext = patch.lightContext;
-  }
-  if (typeof patch.allowUnsafeExternalContent === "boolean") {
-    next.allowUnsafeExternalContent = patch.allowUnsafeExternalContent;
-  }
-  if (typeof patch.deliver === "boolean") {
-    next.deliver = patch.deliver;
-  }
-  if (typeof patch.channel === "string") {
-    next.channel = patch.channel;
-  }
-  if (typeof patch.to === "string") {
-    next.to = patch.to;
-  }
-  if (typeof patch.bestEffortDeliver === "boolean") {
-    next.bestEffortDeliver = patch.bestEffortDeliver;
+  if ("failure" in httpActionPatch) {
+    next.failure = httpActionPatch.failure
+      ? {
+          ...existingHttpAction.failure,
+          ...httpActionPatch.failure,
+        }
+      : undefined;
   }
   return next;
 }
@@ -756,6 +800,28 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     return { kind: "systemEvent", text: patch.text };
   }
 
+  if (patch.kind === "httpAction") {
+    const requestPatch = patch.request;
+    const method = typeof requestPatch?.method === "string" ? requestPatch.method : undefined;
+    const url = typeof requestPatch?.url === "string" ? requestPatch.url.trim() : "";
+    if (!method || !url) {
+      throw new Error(
+        'cron.update payload.kind="httpAction" requires request.method and request.url',
+      );
+    }
+    return {
+      kind: "httpAction",
+      request: {
+        method,
+        url,
+        headers: requestPatch?.headers ? { ...requestPatch.headers } : undefined,
+        body: typeof requestPatch?.body === "string" ? requestPatch.body : undefined,
+      },
+      success: patch.success ? { ...patch.success } : undefined,
+      failure: patch.failure ? { ...patch.failure } : undefined,
+    };
+  }
+
   if (typeof patch.message !== "string" || patch.message.length === 0) {
     throw new Error('cron.update payload.kind="agentTurn" requires message');
   }
@@ -789,6 +855,8 @@ function mergeCronDelivery(
     channel: existing?.channel,
     to: existing?.to,
     accountId: existing?.accountId,
+    threadId: existing?.threadId,
+    replyToId: existing?.replyToId,
     bestEffort: existing?.bestEffort,
     failureDestination: existing?.failureDestination,
   };
@@ -804,6 +872,15 @@ function mergeCronDelivery(
   }
   if ("accountId" in patch) {
     next.accountId = normalizeOptionalTrimmedString(patch.accountId);
+  }
+  if ("threadId" in patch) {
+    next.threadId =
+      typeof patch.threadId === "string" || typeof patch.threadId === "number"
+        ? patch.threadId
+        : undefined;
+  }
+  if ("replyToId" in patch) {
+    next.replyToId = normalizeOptionalTrimmedString(patch.replyToId);
   }
   if (typeof patch.bestEffort === "boolean") {
     next.bestEffort = patch.bestEffort;

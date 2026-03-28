@@ -248,16 +248,29 @@ describe("runCronIsolatedAgentTurn", () => {
         "HEARTBEAT_OK 🦞",
         expect.objectContaining({ accountId: undefined }),
       );
-      expect(callGateway).toHaveBeenCalledTimes(1);
-      expect(callGateway).toHaveBeenCalledWith(
-        expect.objectContaining({
-          method: "sessions.delete",
-          params: expect.objectContaining({
-            key: "agent:main:cron:job-1",
-            deleteTranscript: true,
-            emitLifecycleHooks: false,
-          }),
-        }),
+      expect(callGateway).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(callGateway).mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.objectContaining({
+              method: "chat.inject",
+              params: expect.objectContaining({
+                sessionKey: "agent:main:main",
+                message: "HEARTBEAT_OK 🦞",
+              }),
+            }),
+          ],
+          [
+            expect.objectContaining({
+              method: "sessions.delete",
+              params: expect.objectContaining({
+                key: "agent:main:cron:job-1",
+                deleteTranscript: true,
+                emitLifecycleHooks: false,
+              }),
+            }),
+          ],
+        ]),
       );
     });
   });

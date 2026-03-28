@@ -16,7 +16,7 @@ export type CronSchedule =
 export type CronSessionTarget = "main" | "isolated" | "current" | `session:${string}`;
 export type CronWakeMode = "next-heartbeat" | "now";
 
-export type CronMessageChannel = ChannelId | "last";
+export type CronMessageChannel = ChannelId | "last" | "webchat";
 
 export type CronDeliveryMode = "none" | "announce" | "webhook";
 
@@ -26,6 +26,10 @@ export type CronDelivery = {
   to?: string;
   /** Explicit channel account id for multi-account setups (e.g. multiple Telegram bots). */
   accountId?: string;
+  /** Preserve thread/topic routing for explicit chat delivery. */
+  threadId?: string | number;
+  /** Preserve reply threading for channels that use reply ids instead of thread ids. */
+  replyToId?: string;
   bestEffort?: boolean;
   /** Separate destination for failure notifications. */
   failureDestination?: CronFailureDestination;
@@ -78,9 +82,45 @@ export type CronFailureAlert = {
   accountId?: string;
 };
 
-export type CronPayload = { kind: "systemEvent"; text: string } | CronAgentTurnPayload;
+type CronHttpActionRequest = {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  url: string;
+  headers?: Record<string, string>;
+  body?: string;
+};
 
-export type CronPayloadPatch = { kind: "systemEvent"; text?: string } | CronAgentTurnPayloadPatch;
+type CronHttpActionSuccess = {
+  whenStatus?: "2xx" | "any";
+  summaryText?: string;
+};
+
+type CronHttpActionFailure = {
+  summaryText?: string;
+};
+
+type CronHttpActionPayload = {
+  kind: "httpAction";
+  request: CronHttpActionRequest;
+  success?: CronHttpActionSuccess;
+  failure?: CronHttpActionFailure;
+};
+
+type CronHttpActionPayloadPatch = {
+  kind: "httpAction";
+  request?: Partial<CronHttpActionRequest>;
+  success?: CronHttpActionSuccess;
+  failure?: CronHttpActionFailure;
+};
+
+export type CronPayload =
+  | { kind: "systemEvent"; text: string }
+  | CronAgentTurnPayload
+  | CronHttpActionPayload;
+
+export type CronPayloadPatch =
+  | { kind: "systemEvent"; text?: string }
+  | CronAgentTurnPayloadPatch
+  | CronHttpActionPayloadPatch;
 
 type CronAgentTurnPayloadFields = {
   message: string;

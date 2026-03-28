@@ -1757,7 +1757,6 @@ export class LangchainMemoryManager implements MemorySearchManager {
       if (allowedSources.size === 0) {
         return [];
       }
-      const { store } = await this.getVectorStoreForDomain(plugin, domain);
       const mapped: MemorySearchResult[] = [];
 
       if (domain === "user_memory" && scope !== "session" && allowedSources.has("memory")) {
@@ -1768,9 +1767,21 @@ export class LangchainMemoryManager implements MemorySearchManager {
           dedupe,
           mapped,
         });
+        if (mapped.length >= maxResults) {
+          return mapped;
+        }
       }
 
+      let storePromise:
+        | Promise<Awaited<ReturnType<typeof this.getVectorStoreForDomain>>>
+        | undefined;
+      const ensureStore = async () => {
+        storePromise ??= this.getVectorStoreForDomain(plugin, domain);
+        return (await storePromise).store;
+      };
+
       const collect = async (filter?: Record<string, string>) => {
+        const store = await ensureStore();
         const results = await store.similaritySearchWithScore(
           query,
           candidateLimit,
@@ -1824,7 +1835,17 @@ export class LangchainMemoryManager implements MemorySearchManager {
       }
 
       if (domain === "user_memory" && mapped.length < maxResults && scope !== "session") {
-        await collect({ source: "memory" });
+        try {
+          await collect({ source: "memory" });
+        } catch (error) {
+          if (mapped.length > 0) {
+            this.logger?.warn?.(
+              `memory-langchain user_memory fallback skipped vector search after exact local match: ${stringifyError(error)}`,
+            );
+            return mapped;
+          }
+          throw error;
+        }
       }
 
       if (domain === "docs_kb" && mapped.length < maxResults) {

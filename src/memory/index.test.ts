@@ -35,6 +35,13 @@ vi.mock("./embeddings.js", () => {
         model: options.model,
         outputDimensionality: options.outputDimensionality,
       });
+      if (options.model === "mock-no-provider") {
+        return {
+          requestedProvider: options.provider ?? "auto",
+          provider: null,
+          providerUnavailableReason: "No embeddings provider available.",
+        };
+      }
       const providerId = options.provider === "gemini" ? "gemini" : "mock";
       const model = options.model ?? "mock-embed";
       return {
@@ -191,7 +198,7 @@ describe("memory index", () => {
     extraPaths?: string[];
     sources?: Array<"memory" | "sessions">;
     sessionMemory?: boolean;
-    provider?: "openai" | "gemini";
+    provider?: "openai" | "gemini" | "auto";
     model?: string;
     outputDimensionality?: number;
     multimodal?: {
@@ -317,6 +324,140 @@ describe("memory index", () => {
       );
     } finally {
       await manager.close?.();
+    }
+  });
+
+  it("indexes user_memory, docs_kb, and history separately in FTS-only mode", async () => {
+    const stateDir = path.join(fixtureRoot, `state-fts-only-${randomUUID()}`);
+    const sessionDir = path.join(stateDir, "agents", "main", "sessions");
+    const storePath = path.join(workspaceDir, `index-fts-only-${randomUUID()}.sqlite`);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+
+    const userMemoryPath = path.join(memoryDir, "facts", "profile", "favorite-db.md");
+    const docsPath = path.join(memoryDir, "knowledge", "gateway-token-proof.md");
+    const sessionPath = path.join(sessionDir, "history-proof.jsonl");
+
+    await fs.mkdir(path.dirname(userMemoryPath), { recursive: true });
+    await fs.mkdir(path.dirname(docsPath), { recursive: true });
+    await fs.mkdir(sessionDir, { recursive: true });
+
+    await fs.writeFile(
+      userMemoryPath,
+      "# User Memory\nDatabase favorit owner untuk workload analitik adalah DuckDB.",
+    );
+    await fs.writeFile(
+      docsPath,
+      "# OpenClaw Gateway Token\nGateway token amber-ocean dipakai untuk autentikasi runtime proof.",
+    );
+    await fs.writeFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Kemarin saya bilang DuckDB lebih cepat dari SQLite." }],
+        },
+      })}\n`,
+    );
+
+    try {
+      const manager = requireManager(
+        await getMemorySearchManager({
+          cfg: createCfg({
+            storePath,
+            provider: "auto",
+            model: "mock-no-provider",
+            sources: ["memory", "sessions"],
+            sessionMemory: true,
+            minScore: 0,
+            hybrid: { enabled: true, vectorWeight: 0.7, textWeight: 0.3 },
+          }),
+          agentId: "main",
+        }),
+      );
+
+      await manager.sync({ reason: "test" });
+
+      expect(manager.status()).toMatchObject({
+        provider: "none",
+        custom: { searchMode: "fts-only" },
+      });
+
+      const userMemoryResults = await manager.search("database favorit owner analitik", {
+        domain: "user_memory",
+        sources: ["memory"],
+        minScore: 0,
+      });
+      const docsResults = await manager.search("gateway token amber ocean autentikasi", {
+        domain: "docs_kb",
+        sources: ["docs", "repo"],
+        minScore: 0,
+      });
+      const historyResults = await manager.search("duckdb lebih cepat sqlite", {
+        domain: "history",
+        sources: ["chat", "email", "sessions"],
+        minScore: 0,
+      });
+
+      expect(userMemoryResults.map((entry) => entry.path)).toContain(
+        "memory/facts/profile/favorite-db.md",
+      );
+      expect(userMemoryResults.every((entry) => entry.path.startsWith("memory/facts/"))).toBe(true);
+
+      expect(docsResults.map((entry) => entry.path)).toContain(
+        "memory/knowledge/gateway-token-proof.md",
+      );
+      expect(docsResults.every((entry) => entry.path.startsWith("memory/knowledge/"))).toBe(true);
+
+      expect(historyResults.map((entry) => entry.path)).toContain("sessions/history-proof.jsonl");
+      expect(historyResults.every((entry) => entry.path.startsWith("sessions/"))).toBe(true);
+
+      await manager.close?.();
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(stateDir, { recursive: true, force: true });
+      await fs.rm(storePath, { force: true });
+    }
+  });
+
+  it("searches canonical docs_kb files stored under memory/knowledge", async () => {
+    const knowledgeDir = path.join(memoryDir, "knowledge");
+    const knowledgeFileName = `gateway-token-${randomUUID()}.md`;
+    const knowledgeFilePath = path.join(knowledgeDir, knowledgeFileName);
+    await fs.mkdir(knowledgeDir, { recursive: true });
+    await fs.writeFile(
+      knowledgeFilePath,
+      "# Saved knowledge\nAlpha gateway token amber-ocean reference.\n",
+    );
+
+    const cfg = createCfg({
+      storePath: path.join(workspaceDir, `index-docs-kb-${randomUUID()}.sqlite`),
+      hybrid: { enabled: true, vectorWeight: 0.5, textWeight: 0.5 },
+    });
+    const manager = await getFreshManager(cfg);
+    try {
+      await manager.sync({ reason: "test" });
+      const results = await manager.search("alpha gateway token", {
+        domain: "docs_kb",
+        sources: ["docs", "repo"],
+      });
+      expect(results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: `memory/knowledge/${knowledgeFileName}`,
+            source: "memory",
+          }),
+        ]),
+      );
+      expect(results.every((entry) => entry.path.startsWith("memory/knowledge/"))).toBe(true);
+    } finally {
+      await manager.close?.();
+      await fs.rm(knowledgeFilePath, { force: true });
     }
   });
 

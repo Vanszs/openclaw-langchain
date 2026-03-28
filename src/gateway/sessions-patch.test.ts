@@ -105,6 +105,63 @@ function createAllowlistedAnthropicModelCfg(): OpenClawConfig {
 }
 
 describe("gateway sessions patch", () => {
+  test("persists typed route metadata and normalizes delivery fields", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "agent:main:telegram:group:ops",
+        patch: {
+          key: "agent:main:telegram:group:ops",
+          chatType: "group",
+          origin: {
+            provider: "Telegram",
+            surface: "telegram",
+            chatType: "group",
+            from: "telegram:123",
+            to: "telegram:ops",
+            accountId: " default ",
+            threadId: " 42 ",
+          },
+          deliveryContext: {
+            channel: "Telegram",
+            to: "telegram:ops",
+            accountId: " default ",
+            threadId: " 42 ",
+          },
+        },
+      }),
+    );
+    expect(entry.chatType).toBe("group");
+    expect(entry.origin).toMatchObject({
+      provider: "telegram",
+      surface: "telegram",
+      chatType: "group",
+      from: "telegram:123",
+      to: "telegram:ops",
+      accountId: "default",
+      threadId: "42",
+    });
+    expect(entry.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "telegram:ops",
+      accountId: "default",
+      threadId: "42",
+    });
+    expect(entry.lastChannel).toBe("telegram");
+    expect(entry.lastTo).toBe("telegram:ops");
+    expect(entry.lastAccountId).toBe("default");
+    expect(entry.lastThreadId).toBe("42");
+  });
+
+  test("rejects invalid patched chatType values", async () => {
+    const result = await runPatch({
+      patch: {
+        key: MAIN_SESSION_KEY,
+        chatType: "topic",
+      },
+    });
+    expectPatchError(result, "invalid chatType");
+  });
+
   test("persists thinkingLevel=off (does not clear)", async () => {
     const entry = expectPatchOk(
       await runPatch({

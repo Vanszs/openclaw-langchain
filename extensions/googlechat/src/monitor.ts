@@ -254,6 +254,7 @@ async function processMessageWithPipeline(params: {
     Surface: "googlechat",
     MessageSid: message.name,
     MessageSidFull: message.name,
+    MessageThreadId: message.thread?.name,
     ReplyToId: message.thread?.name,
     ReplyToIdFull: message.thread?.name,
     MediaPath: mediaPath,

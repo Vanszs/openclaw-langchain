@@ -3,6 +3,7 @@ import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { createOutboundSendDeps, type CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { findMirroredTranscriptSessionKey } from "../../config/sessions/delivery-info.js";
 import { callGateway } from "../../gateway/call.js";
 import { sleepWithAbort } from "../../infra/backoff.js";
 import {
@@ -12,6 +13,7 @@ import {
 import { resolveAgentOutboundIdentity } from "../../infra/outbound/identity.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { logWarn } from "../../logger.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import type { CronJob, CronRunTelemetry } from "../types.js";
 import type { DeliveryTargetResolution } from "./delivery-target.js";
 import { pickSummaryFromOutput } from "./helpers.js";
@@ -22,6 +24,9 @@ import {
   readDescendantSubagentFallbackReply,
   waitForDescendantSubagentSummary,
 } from "./subagent-followup.js";
+
+const EXACT_REMINDER_PROMPT_PREFIX =
+  "Kirim pengingat ini sekarang. Balas dengan tepat teks berikut dan jangan tambah apa pun:\n";
 
 function normalizeDeliveryTarget(channel: string, to: string): string {
   const channelLower = channel.trim().toLowerCase();
@@ -223,9 +228,10 @@ function buildDirectCronDeliveryIdempotencyKey(params: {
     params.delivery.threadId == null || params.delivery.threadId === ""
       ? ""
       : String(params.delivery.threadId);
+  const replyToId = params.delivery.replyToId?.trim() ?? "";
   const accountId = params.delivery.accountId?.trim() ?? "";
   const normalizedTo = normalizeDeliveryTarget(params.delivery.channel, params.delivery.to);
-  return `cron-direct-delivery:v1:${params.runSessionId}:${params.delivery.channel}:${accountId}:${normalizedTo}:${threadId}`;
+  return `cron-direct-delivery:v1:${params.runSessionId}:${params.delivery.channel}:${accountId}:${normalizedTo}:${threadId}:${replyToId}`;
 }
 
 export function resetCompletedDirectCronDeliveriesForTests() {
@@ -234,6 +240,18 @@ export function resetCompletedDirectCronDeliveriesForTests() {
 
 export function getCompletedDirectCronDeliveriesCountForTests(): number {
   return COMPLETED_DIRECT_CRON_DELIVERIES.size;
+}
+
+function resolveExactReminderDeliveryText(job: CronJob): string | undefined {
+  if (job.payload.kind !== "agentTurn") {
+    return undefined;
+  }
+  const prompt = job.payload.message;
+  if (!prompt?.startsWith(EXACT_REMINDER_PROMPT_PREFIX)) {
+    return undefined;
+  }
+  const reminderText = prompt.slice(EXACT_REMINDER_PROMPT_PREFIX.length).trim();
+  return reminderText || undefined;
 }
 
 function summarizeDirectCronDeliveryError(error: unknown): string {
@@ -300,10 +318,17 @@ export async function dispatchCronDelivery(
   params: DispatchCronDeliveryParams,
 ): Promise<DispatchCronDeliveryState> {
   const skipMessagingToolDelivery = params.skipMessagingToolDelivery === true;
+  const exactReminderText = resolveExactReminderDeliveryText(params.job);
   let summary = params.summary;
   let outputText = params.outputText;
   let synthesizedText = params.synthesizedText;
   let deliveryPayloads = params.deliveryPayloads;
+  if (exactReminderText) {
+    summary = exactReminderText;
+    outputText = exactReminderText;
+    synthesizedText = exactReminderText;
+    deliveryPayloads = [{ text: exactReminderText }];
+  }
 
   // Shared callers can treat a matching message-tool send as the completed
   // delivery path. Cron-owned callers keep this false so direct cron delivery
@@ -331,8 +356,9 @@ export async function dispatchCronDelivery(
       delivery,
     });
     try {
-      const payloadsForDelivery =
-        deliveryPayloads.length > 0
+      const payloadsForDelivery = exactReminderText
+        ? [{ text: exactReminderText }]
+        : deliveryPayloads.length > 0
           ? deliveryPayloads
           : synthesizedText
             ? [{ text: synthesizedText }]
@@ -389,6 +415,21 @@ export async function dispatchCronDelivery(
         agentId: params.agentId,
         sessionKey: params.agentSessionKey,
       });
+      const mirrorSessionKey = findMirroredTranscriptSessionKey({
+        cfg: params.cfgWithAgentDefaults,
+        agentId: params.agentId,
+        channel: delivery.channel,
+        to: delivery.to,
+        accountId: delivery.accountId,
+        threadId: delivery.threadId,
+      });
+      const mirrorIdempotencyKey = `mirror:${deliveryIdempotencyKey}`;
+      const mirrorText =
+        exactReminderText ??
+        synthesizedText ??
+        [...payloadsForDelivery]
+          .toReversed()
+          .find((payload) => typeof payload?.text === "string" && payload.text.trim())?.text;
       const runDelivery = async () =>
         await deliverOutboundPayloads({
           cfg: params.cfgWithAgentDefaults,
@@ -396,12 +437,23 @@ export async function dispatchCronDelivery(
           to: delivery.to,
           accountId: delivery.accountId,
           threadId: delivery.threadId,
+          replyToId: delivery.replyToId,
           payloads: payloadsForDelivery,
           session: deliverySession,
           identity,
           bestEffort: params.deliveryBestEffort,
           deps: createOutboundSendDeps(params.deps),
           abortSignal: params.abortSignal,
+          ...(mirrorSessionKey
+            ? {
+                mirror: {
+                  agentId: params.agentId,
+                  sessionKey: mirrorSessionKey,
+                  text: mirrorText,
+                  idempotencyKey: mirrorIdempotencyKey,
+                },
+              }
+            : {}),
           // Isolated cron direct delivery uses its own transient retry loop.
           // Keep all attempts out of the write-ahead delivery queue so a
           // late-successful first send cannot leave behind a failed queue
@@ -419,6 +471,23 @@ export async function dispatchCronDelivery(
       delivered = deliveryResults.length > 0;
       if (delivered) {
         rememberCompletedDirectCronDelivery(deliveryIdempotencyKey, deliveryResults);
+        if (mirrorSessionKey && mirrorText?.trim()) {
+          try {
+            await callGateway({
+              method: "chat.inject",
+              params: {
+                sessionKey: mirrorSessionKey,
+                message: mirrorText,
+                idempotencyKey: mirrorIdempotencyKey,
+              },
+              timeoutMs: 10_000,
+            });
+          } catch (err) {
+            logWarn(
+              `[cron:${params.job.id}] failed to mirror direct delivery into ${mirrorSessionKey}: ${summarizeDirectCronDeliveryError(err)}`,
+            );
+          }
+        }
       }
       return null;
     } catch (err) {
@@ -441,6 +510,14 @@ export async function dispatchCronDelivery(
   ): Promise<RunCronAgentTurnResult | null> => {
     const cleanupDirectCronSessionIfNeeded = async (): Promise<void> => {
       if (!params.job.deleteAfterRun) {
+        return;
+      }
+      // Stored cron sessions are normalized through `toAgentStoreSessionKey`,
+      // so the base isolated session key is typically `agent:<id>:cron:<job>`.
+      // Keep accepting the raw `cron:<job>` form for older callers/tests.
+      const isDirectCronSession =
+        params.agentSessionKey.startsWith("cron:") || params.agentSessionKey.includes(":cron:");
+      if (params.job.sessionTarget !== "isolated" || !isDirectCronSession) {
         return;
       }
       try {
@@ -555,7 +632,39 @@ export async function dispatchCronDelivery(
       });
     }
     try {
+      if (delivery.channel === INTERNAL_MESSAGE_CHANNEL) {
+        deliveryAttempted = true;
+        await callGateway({
+          method: "chat.inject",
+          params: {
+            sessionKey: delivery.to,
+            message: synthesizedText,
+          },
+          timeoutMs: 10_000,
+        });
+        delivered = true;
+        return params.withRunSession({
+          status: "ok",
+          summary,
+          outputText,
+          delivered: true,
+          deliveryAttempted: true,
+          ...params.telemetry,
+        });
+      }
       return await deliverViaDirect(delivery, { retryTransient: true });
+    } catch (err) {
+      if (!params.deliveryBestEffort) {
+        return params.withRunSession({
+          status: "error",
+          summary,
+          outputText,
+          error: String(err),
+          deliveryAttempted: true,
+          ...params.telemetry,
+        });
+      }
+      return null;
     } finally {
       await cleanupDirectCronSessionIfNeeded();
     }
@@ -596,7 +705,10 @@ export async function dispatchCronDelivery(
     // send through the real outbound adapter so delivered=true always reflects
     // an actual channel send instead of internal announce routing.
     const useDirectDelivery =
-      params.deliveryPayloadHasStructuredContent || params.resolvedDelivery.threadId != null;
+      (params.resolvedDelivery.channel !== INTERNAL_MESSAGE_CHANNEL &&
+        params.deliveryPayloadHasStructuredContent) ||
+      (params.resolvedDelivery.channel !== INTERNAL_MESSAGE_CHANNEL &&
+        (params.resolvedDelivery.threadId != null || params.resolvedDelivery.replyToId != null));
     if (useDirectDelivery) {
       const directResult = await deliverViaDirect(params.resolvedDelivery);
       if (directResult) {

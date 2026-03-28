@@ -16,6 +16,7 @@ export type MemoryReadResult = { text: string; path: string };
 type MemoryBackend = "builtin" | "qmd";
 
 let backend: MemoryBackend = "builtin";
+let statusSources: MemorySource[] = ["memory"];
 let searchImpl: SearchImpl = async () => [];
 let readFileImpl: (params: MemoryReadParams) => Promise<MemoryReadResult> = async (params) => ({
   text: "",
@@ -37,8 +38,8 @@ const stubManager = {
     provider: "builtin",
     model: "builtin",
     requestedProvider: "builtin",
-    sources: ["memory" as const],
-    sourceCounts: [{ source: "memory" as const, files: 1, chunks: 1 }],
+    sources: statusSources,
+    sourceCounts: statusSources.map((source) => ({ source, files: 1, chunks: 1 })),
   }),
   sync: vi.fn(),
   probeVectorAvailability: vi.fn(async () => true),
@@ -65,10 +66,12 @@ export function setMemoryReadFileImpl(
 
 export function resetMemoryToolMockState(overrides?: {
   backend?: MemoryBackend;
+  statusSources?: MemorySource[];
   searchImpl?: SearchImpl;
   readFileImpl?: (params: MemoryReadParams) => Promise<MemoryReadResult>;
 }): void {
   backend = overrides?.backend ?? "builtin";
+  statusSources = overrides?.statusSources ?? ["memory"];
   searchImpl = overrides?.searchImpl ?? (async () => []);
   readFileImpl =
     overrides?.readFileImpl ??

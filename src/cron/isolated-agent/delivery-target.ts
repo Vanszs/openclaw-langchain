@@ -1,5 +1,4 @@
 import { resolveWhatsAppAccount } from "openclaw/plugin-sdk/whatsapp";
-import type { ChannelId } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionStore,
@@ -16,23 +15,29 @@ import {
 import { readChannelAllowFromStoreSync } from "../../pairing/pairing-store.js";
 import { buildChannelAccountBindings } from "../../routing/bindings.js";
 import { normalizeAccountId, normalizeAgentId } from "../../routing/session-key.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  type GatewayMessageChannel,
+} from "../../utils/message-channel.js";
 import { normalizeWhatsAppTarget } from "../../whatsapp/normalize.js";
 
 export type DeliveryTargetResolution =
   | {
       ok: true;
-      channel: Exclude<OutboundChannel, "none">;
+      channel: GatewayMessageChannel;
       to: string;
       accountId?: string;
       threadId?: string | number;
+      replyToId?: string;
       mode: "explicit" | "implicit";
     }
   | {
       ok: false;
-      channel?: Exclude<OutboundChannel, "none">;
+      channel?: GatewayMessageChannel;
       to?: string;
       accountId?: string;
       threadId?: string | number;
+      replyToId?: string;
       mode: "explicit" | "implicit";
       error: Error;
     };
@@ -41,16 +46,58 @@ export async function resolveDeliveryTarget(
   cfg: OpenClawConfig,
   agentId: string,
   jobPayload: {
-    channel?: "last" | ChannelId;
+    channel?: "last" | GatewayMessageChannel;
     to?: string;
     /** Explicit accountId from job.delivery — overrides session-derived and binding-derived values. */
     accountId?: string;
+    threadId?: string | number;
+    replyToId?: string;
     sessionKey?: string;
   },
 ): Promise<DeliveryTargetResolution> {
   const requestedChannel = typeof jobPayload.channel === "string" ? jobPayload.channel : "last";
   const explicitTo = typeof jobPayload.to === "string" ? jobPayload.to : undefined;
   const allowMismatchedLastTo = requestedChannel === "last";
+  const explicitAccountId =
+    typeof jobPayload.accountId === "string" && jobPayload.accountId.trim()
+      ? jobPayload.accountId.trim()
+      : undefined;
+  const explicitReplyToId =
+    typeof jobPayload.replyToId === "string" && jobPayload.replyToId.trim()
+      ? jobPayload.replyToId.trim()
+      : undefined;
+  const explicitThreadId =
+    jobPayload.threadId != null && jobPayload.threadId !== "" ? jobPayload.threadId : undefined;
+
+  if (requestedChannel === INTERNAL_MESSAGE_CHANNEL) {
+    const sessionTarget =
+      explicitTo ??
+      (typeof jobPayload.sessionKey === "string" && jobPayload.sessionKey.trim()
+        ? jobPayload.sessionKey.trim()
+        : undefined);
+    const mode = explicitTo ? "explicit" : "implicit";
+    if (!sessionTarget) {
+      return {
+        ok: false,
+        channel: INTERNAL_MESSAGE_CHANNEL,
+        to: undefined,
+        accountId: explicitAccountId,
+        threadId: explicitThreadId,
+        replyToId: explicitReplyToId,
+        mode,
+        error: new Error("WebChat delivery requires a target sessionKey."),
+      };
+    }
+    return {
+      ok: true,
+      channel: INTERNAL_MESSAGE_CHANNEL,
+      to: sessionTarget,
+      accountId: explicitAccountId,
+      threadId: explicitThreadId,
+      replyToId: explicitReplyToId,
+      mode,
+    };
+  }
 
   const sessionCfg = cfg.session;
   const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId });
@@ -67,6 +114,7 @@ export async function resolveDeliveryTarget(
     entry: main,
     requestedChannel,
     explicitTo,
+    explicitThreadId: jobPayload.threadId,
     allowMismatchedLastTo,
   });
 
@@ -93,6 +141,7 @@ export async function resolveDeliveryTarget(
         entry: main,
         requestedChannel,
         explicitTo,
+        explicitThreadId: jobPayload.threadId,
         fallbackChannel,
         allowMismatchedLastTo,
         mode: preliminary.mode,
@@ -106,10 +155,6 @@ export async function resolveDeliveryTarget(
   // Prefer an explicit accountId from the job's delivery config (set via
   // --account on cron add/edit). Fall back to the session's lastAccountId,
   // then to the agent's bound account from bindings config.
-  const explicitAccountId =
-    typeof jobPayload.accountId === "string" && jobPayload.accountId.trim()
-      ? jobPayload.accountId.trim()
-      : undefined;
   let accountId = explicitAccountId ?? resolved.accountId;
   if (!accountId && channel) {
     const bindings = buildChannelAccountBindings(cfg);
@@ -134,6 +179,7 @@ export async function resolveDeliveryTarget(
     (resolved.threadIdExplicit || (resolved.to && resolved.to === resolved.lastTo))
       ? resolved.threadId
       : undefined;
+  const replyToId = explicitReplyToId;
 
   if (!channel) {
     return {
@@ -142,6 +188,7 @@ export async function resolveDeliveryTarget(
       to: undefined,
       accountId,
       threadId,
+      replyToId,
       mode,
       error:
         channelResolutionError ??
@@ -187,6 +234,7 @@ export async function resolveDeliveryTarget(
       to: undefined,
       accountId,
       threadId,
+      replyToId,
       mode,
       error: docked.error,
     };
@@ -203,6 +251,7 @@ export async function resolveDeliveryTarget(
     to: idLikeTarget?.to ?? docked.to,
     accountId,
     threadId,
+    replyToId,
     mode,
   };
 }

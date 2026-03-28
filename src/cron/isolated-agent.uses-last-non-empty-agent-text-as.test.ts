@@ -192,6 +192,24 @@ describe("runCronIsolatedAgentTurn", () => {
     });
   });
 
+  it("prefers canonical reminder text over noisy model output", async () => {
+    await withTempHome(async (home) => {
+      const reminderText = "Pengingat: minum obat";
+      const { res } = await runCronTurn(home, {
+        jobPayload: {
+          kind: "agentTurn",
+          message: `Kirim pengingat ini sekarang. Balas dengan tepat teks berikut dan jangan tambah apa pun:\n${reminderText}`,
+          deliver: false,
+        },
+        mockTexts: ["Oops! Unexpected wrapper"],
+      });
+
+      expect(res.status).toBe("ok");
+      expect(res.outputText).toBe(reminderText);
+      expect(res.summary).toBe(reminderText);
+    });
+  });
+
   it("returns error when embedded run payload is marked as error", async () => {
     await withTempHome(async (home) => {
       mockEmbeddedPayloads([

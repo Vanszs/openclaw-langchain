@@ -1,7 +1,8 @@
 import { getChannelPlugin, listChannelPlugins } from "../channels/plugins/index.js";
 import type { ChannelId, ChannelPlugin } from "../channels/plugins/types.js";
-import { normalizeAnyChannelId } from "../channels/registry.js";
+import { normalizeAnyChannelId, normalizeChatChannelId } from "../channels/registry.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { readChannelAllowFromStoreSync } from "../pairing/pairing-store.js";
 import { normalizeStringEntries } from "../shared/string-normalization.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -15,10 +16,26 @@ export type CommandAuthorization = {
   ownerList: string[];
   senderId?: string;
   senderIsOwner: boolean;
+  senderIsOwnerExplicit: boolean;
+  senderIsOwnerByScope: boolean;
   isAuthorizedSender: boolean;
   from?: string;
   to?: string;
 };
+
+function normalizeKnownChannelId(raw?: string | null): ChannelId | undefined {
+  return normalizeAnyChannelId(raw) ?? normalizeChatChannelId(raw) ?? undefined;
+}
+
+function normalizeAllowFromChannel(
+  raw?: string | null,
+): ChannelId | typeof INTERNAL_MESSAGE_CHANNEL | undefined {
+  const normalizedMessageChannel = normalizeMessageChannel(raw);
+  if (normalizedMessageChannel === INTERNAL_MESSAGE_CHANNEL) {
+    return INTERNAL_MESSAGE_CHANNEL;
+  }
+  return normalizeKnownChannelId(normalizedMessageChannel ?? raw ?? undefined);
+}
 
 function resolveProviderFromContext(ctx: MsgContext, cfg: OpenClawConfig): ChannelId | undefined {
   const explicitMessageChannel =
@@ -29,10 +46,10 @@ function resolveProviderFromContext(ctx: MsgContext, cfg: OpenClawConfig): Chann
     return undefined;
   }
   const direct =
-    normalizeAnyChannelId(explicitMessageChannel ?? undefined) ??
-    normalizeAnyChannelId(ctx.Provider) ??
-    normalizeAnyChannelId(ctx.Surface) ??
-    normalizeAnyChannelId(ctx.OriginatingChannel);
+    normalizeKnownChannelId(explicitMessageChannel ?? undefined) ??
+    normalizeKnownChannelId(ctx.Provider) ??
+    normalizeKnownChannelId(ctx.Surface) ??
+    normalizeKnownChannelId(ctx.OriginatingChannel);
   if (direct) {
     return direct;
   }
@@ -45,8 +62,8 @@ function resolveProviderFromContext(ctx: MsgContext, cfg: OpenClawConfig): Chann
       return undefined;
     }
     const normalized =
-      normalizeAnyChannelId(normalizedCandidateChannel ?? undefined) ??
-      normalizeAnyChannelId(candidate);
+      normalizeKnownChannelId(normalizedCandidateChannel ?? undefined) ??
+      normalizeKnownChannelId(candidate);
     if (normalized) {
       return normalized;
     }
@@ -70,6 +87,18 @@ function resolveProviderFromContext(ctx: MsgContext, cfg: OpenClawConfig): Chann
     return configured[0];
   }
   return undefined;
+}
+
+function resolveOwnerAllowFromMessageChannel(ctx: MsgContext): string | undefined {
+  const providerChannel = normalizeMessageChannel(ctx.Provider);
+  if (providerChannel) {
+    return providerChannel;
+  }
+  const surfaceChannel = normalizeMessageChannel(ctx.Surface);
+  if (surfaceChannel) {
+    return surfaceChannel;
+  }
+  return normalizeMessageChannel(ctx.OriginatingChannel) ?? providerChannel ?? surfaceChannel;
 }
 
 function formatAllowFromList(params: {
@@ -108,12 +137,14 @@ function resolveOwnerAllowFromList(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
   providerId?: ChannelId;
+  messageChannel?: string | null;
   allowFrom?: Array<string | number>;
 }): string[] {
   const raw = params.allowFrom ?? params.cfg.commands?.ownerAllowFrom;
   if (!Array.isArray(raw) || raw.length === 0) {
     return [];
   }
+  const scopedChannel = normalizeAllowFromChannel(params.messageChannel ?? params.providerId);
   const filtered: string[] = [];
   for (const entry of raw) {
     const trimmed = String(entry ?? "").trim();
@@ -123,9 +154,9 @@ function resolveOwnerAllowFromList(params: {
     const separatorIndex = trimmed.indexOf(":");
     if (separatorIndex > 0) {
       const prefix = trimmed.slice(0, separatorIndex);
-      const channel = normalizeAnyChannelId(prefix);
+      const channel = normalizeAllowFromChannel(prefix);
       if (channel) {
-        if (params.providerId && channel !== params.providerId) {
+        if (scopedChannel && channel !== scopedChannel) {
           continue;
         }
         const remainder = trimmed.slice(separatorIndex + 1).trim();
@@ -273,9 +304,15 @@ export function resolveCommandAuthorization(params: {
     providerId,
   });
 
-  const allowFromRaw = plugin?.config?.resolveAllowFrom
+  const pluginAllowFrom = plugin?.config?.resolveAllowFrom
     ? plugin.config.resolveAllowFrom({ cfg, accountId: ctx.AccountId })
     : [];
+  const allowFromRaw =
+    Array.isArray(pluginAllowFrom) && pluginAllowFrom.length > 0
+      ? pluginAllowFrom
+      : providerId
+        ? readChannelAllowFromStoreSync(providerId, process.env, ctx.AccountId)
+        : [];
   const allowFromList = formatAllowFromList({
     plugin,
     cfg,
@@ -287,6 +324,7 @@ export function resolveCommandAuthorization(params: {
     cfg,
     accountId: ctx.AccountId,
     providerId,
+    messageChannel: resolveOwnerAllowFromMessageChannel(ctx),
     allowFrom: cfg.commands?.ownerAllowFrom,
   });
   const contextOwnerAllowFromList = resolveOwnerAllowFromList({
@@ -294,6 +332,7 @@ export function resolveCommandAuthorization(params: {
     cfg,
     accountId: ctx.AccountId,
     providerId,
+    messageChannel: resolveOwnerAllowFromMessageChannel(ctx),
     allowFrom: ctx.OwnerAllowFrom,
   });
   const allowAll =
@@ -351,7 +390,8 @@ export function resolveCommandAuthorization(params: {
     Array.isArray(ctx.GatewayClientScopes) &&
     ctx.GatewayClientScopes.includes("operator.admin");
   const ownerAllowlistConfigured = ownerAllowAll || explicitOwners.length > 0;
-  const senderIsOwner = senderIsOwnerByIdentity || senderIsOwnerByScope || ownerAllowAll;
+  const senderIsOwnerExplicit = senderIsOwnerByIdentity || ownerAllowAll;
+  const senderIsOwner = senderIsOwnerExplicit || senderIsOwnerByScope;
   const requireOwner = enforceOwner || ownerAllowlistConfigured;
   const isOwnerForCommands = !requireOwner
     ? true
@@ -381,6 +421,8 @@ export function resolveCommandAuthorization(params: {
     ownerList,
     senderId: senderId || undefined,
     senderIsOwner,
+    senderIsOwnerExplicit,
+    senderIsOwnerByScope,
     isAuthorizedSender,
     from: from || undefined,
     to: to || undefined,

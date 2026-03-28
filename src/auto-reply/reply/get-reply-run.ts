@@ -28,6 +28,7 @@ import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { buildInboundMediaNote } from "../media-note.js";
+import type { DeterministicSchedulingAction } from "../scheduling-intent.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import {
   type ElevatedLevel,
@@ -64,12 +65,114 @@ type DeterministicSchedulingOutcome = {
   directReply?: ReplyPayload;
   sessionPatch?: Partial<SessionEntry>;
   clearPendingScheduling?: boolean;
-  resolvedSchedulingAction?: {
-    kind: "cron.add";
-    params: Record<string, unknown>;
-    confirmationText: string;
+  resolvedSchedulingAction?: DeterministicSchedulingAction;
+};
+
+type CronSchedulingJob = {
+  id: string;
+  name?: string;
+  updatedAtMs?: number;
+  enabled?: boolean;
+  schedule?: {
+    kind?: string;
+    at?: string;
+    everyMs?: number;
+    expr?: string;
+  };
+  delivery?: {
+    mode?: string;
+    channel?: string;
+    to?: string;
   };
 };
+
+type CronSchedulingListPage = {
+  jobs: CronSchedulingJob[];
+  total: number;
+};
+
+type CronSchedulingStatus = {
+  enabled: boolean;
+  jobs: number;
+  nextWakeAtMs?: number | null;
+};
+
+function buildLastDeterministicCronJobPatch(
+  job?: Pick<CronSchedulingJob, "id" | "name" | "updatedAtMs">,
+): Partial<SessionEntry> | undefined {
+  if (!job?.id) {
+    return undefined;
+  }
+  return {
+    lastDeterministicCronJob: {
+      id: job.id,
+      name: job.name,
+      updatedAt: job.updatedAtMs ?? Date.now(),
+    },
+  };
+}
+
+function formatCronScheduleSummary(job: CronSchedulingJob): string {
+  if (job.schedule?.kind === "every" && typeof job.schedule.everyMs === "number") {
+    const minutes = Math.round(job.schedule.everyMs / 60_000);
+    return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+  }
+  if (job.schedule?.kind === "cron" && job.schedule.expr) {
+    return job.schedule.expr;
+  }
+  if (job.schedule?.kind === "at" && job.schedule.at) {
+    return new Date(job.schedule.at).toLocaleString("id-ID", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  }
+  return job.schedule?.kind ?? "jadwal tidak diketahui";
+}
+
+function formatCronDeliverySummary(job: CronSchedulingJob): string {
+  if (job.delivery?.mode === "none") {
+    return "internal";
+  }
+  if (job.delivery?.mode === "webhook") {
+    return job.delivery.to ? `webhook ${job.delivery.to}` : "webhook";
+  }
+  if (job.delivery?.mode === "announce") {
+    const channel = job.delivery.channel ?? "last";
+    const to = job.delivery.to ? ` -> ${job.delivery.to}` : "";
+    return `${channel}${to}`;
+  }
+  return "delivery default";
+}
+
+function formatCronListReply(page: CronSchedulingListPage): ReplyPayload {
+  if (!Array.isArray(page.jobs) || page.jobs.length === 0) {
+    return {
+      text: "Saat ini tidak ada job cron yang cocok.",
+    };
+  }
+  const lines = page.jobs.slice(0, 10).map((job, index) => {
+    const status = job.enabled === false ? "off" : "on";
+    return `${index + 1}. ${job.name ?? job.id} [${status}] | ${formatCronScheduleSummary(job)} | ${formatCronDeliverySummary(job)}`;
+  });
+  const suffix =
+    page.total > page.jobs.length ? `\nMasih ada ${page.total - page.jobs.length} job lain.` : "";
+  return {
+    text: `Daftar job cron aktif:\n${lines.join("\n")}${suffix}`,
+  };
+}
+
+function formatCronStatusReply(status: CronSchedulingStatus): ReplyPayload {
+  const nextWake =
+    typeof status.nextWakeAtMs === "number"
+      ? new Date(status.nextWakeAtMs).toLocaleString("id-ID", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })
+      : "tidak ada";
+  return {
+    text: `Cron ${status.enabled ? "aktif" : "nonaktif"}. Total job: ${status.jobs}. Next wake: ${nextWake}.`,
+  };
+}
 
 function normalizeSummaryToken(value: string, maxChars = 80): string {
   const cleaned = value.replace(/\s+/g, " ").trim();
@@ -274,7 +377,66 @@ async function executeDeterministicSchedulingOutcome(params: {
 
   if (params.outcome.resolvedSchedulingAction) {
     try {
-      await callGatewayTool("cron.add", {}, params.outcome.resolvedSchedulingAction.params);
+      let reply: ReplyPayload | undefined;
+      let actionPatch: Partial<SessionEntry> | undefined;
+      const action = params.outcome.resolvedSchedulingAction;
+      if (action.kind === "cron.add") {
+        const job = await callGatewayTool<CronSchedulingJob>("cron.add", {}, action.params);
+        if (action.rememberCreatedJob) {
+          actionPatch = buildLastDeterministicCronJobPatch(job);
+        }
+        reply = params.outcome.directReply ?? {
+          text: action.confirmationText,
+        };
+      } else if (action.kind === "cron.update") {
+        const job = await callGatewayTool<CronSchedulingJob>("cron.update", {}, action.params);
+        actionPatch =
+          buildLastDeterministicCronJobPatch(job) ??
+          (action.rememberJobId
+            ? {
+                lastDeterministicCronJob: {
+                  id: action.rememberJobId,
+                  updatedAt: Date.now(),
+                },
+              }
+            : undefined);
+        reply = params.outcome.directReply ?? {
+          text: action.confirmationText,
+        };
+      } else if (action.kind === "cron.remove") {
+        await callGatewayTool("cron.remove", {}, action.params);
+        if (params.sessionEntry?.lastDeterministicCronJob?.id === action.removedJobId) {
+          actionPatch = {
+            lastDeterministicCronJob: undefined,
+          };
+        }
+        reply = params.outcome.directReply ?? {
+          text: action.confirmationText,
+        };
+      } else if (action.kind === "cron.list") {
+        const page = await callGatewayTool<CronSchedulingListPage>("cron.list", {}, action.params);
+        if (action.rememberIfSingleResult && page.jobs.length === 1) {
+          actionPatch = buildLastDeterministicCronJobPatch(page.jobs[0]);
+        }
+        reply = formatCronListReply(page);
+      } else if (action.kind === "cron.status") {
+        const status = await callGatewayTool<CronSchedulingStatus>(
+          "cron.status",
+          {},
+          action.params,
+        );
+        reply = formatCronStatusReply(status);
+      }
+      if (actionPatch) {
+        sessionEntry = await applySessionPatch({
+          patch: actionPatch,
+          clearPendingScheduling: false,
+          storePath: params.storePath,
+          sessionStore: params.sessionStore,
+          sessionKey: params.sessionKey,
+          sessionEntry,
+        });
+      }
       sessionEntry = await applySessionPatch({
         clearPendingScheduling: params.outcome.clearPendingScheduling,
         storePath: params.storePath,
@@ -283,9 +445,7 @@ async function executeDeterministicSchedulingOutcome(params: {
         sessionEntry,
       });
       return {
-        reply: params.outcome.directReply ?? {
-          text: params.outcome.resolvedSchedulingAction.confirmationText,
-        },
+        reply,
         sessionEntry,
       };
     } catch (error) {
@@ -470,6 +630,23 @@ export async function runPreparedReply(
         directReply?: ReplyPayload;
       }
     | undefined;
+  const schedulingRuntimeOps = {
+    listCronJobs: async (opts?: {
+      includeDisabled?: boolean;
+      query?: string;
+      enabled?: "all" | "enabled" | "disabled";
+    }) =>
+      await callGatewayTool<CronSchedulingListPage>(
+        "cron.list",
+        {},
+        {
+          includeDisabled: opts?.includeDisabled,
+          query: opts?.query,
+          enabled: opts?.enabled,
+        },
+      ),
+    getCronStatus: async () => await callGatewayTool<CronSchedulingStatus>("cron.status", {}, {}),
+  };
   try {
     const { resolvePendingSchedulingFollowup } = await import("../scheduling-intent.runtime.js");
     const pendingSchedulingReply = await resolvePendingSchedulingFollowup({
@@ -504,6 +681,8 @@ export async function runPreparedReply(
       cfg,
       ctx,
       query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+      sessionEntry,
+      runtimeOps: schedulingRuntimeOps,
     });
     if (schedulingReply) {
       const executed = await executeDeterministicSchedulingOutcome({
@@ -531,6 +710,7 @@ export async function runPreparedReply(
     const selfReply = await buildDeterministicSelfReplyContext({
       cfg,
       workspaceDir,
+      agentId,
       query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
       runtime: {
         textPrimary: provider && model ? `${provider}/${model}` : undefined,
@@ -566,6 +746,7 @@ export async function runPreparedReply(
         ctx,
         cfg,
         query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
+        workspaceDir,
       });
     }
   } catch (error) {
@@ -687,6 +868,7 @@ export async function runPreparedReply(
     const { maybeHandleDeterministicMemorySave } = await import("../memory-save.js");
     const saveAction = await maybeHandleDeterministicMemorySave({
       ctx,
+      cfg,
       query: ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "",
       workspaceDir,
       attachmentRetrievalNote,

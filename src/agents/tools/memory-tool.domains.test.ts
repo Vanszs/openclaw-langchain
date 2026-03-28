@@ -16,6 +16,7 @@ import {
 describe("memory domain tools", () => {
   beforeEach(() => {
     resetMemoryToolMockState({
+      statusSources: ["memory"],
       searchImpl: async () => [],
     });
   });
@@ -34,7 +35,7 @@ describe("memory domain tools", () => {
     });
   });
 
-  it("routes knowledge_search to docs_kb sources", async () => {
+  it("routes knowledge_search to memory storage when docs_kb is backed by memory files", async () => {
     const tool = createKnowledgeSearchToolOrThrow();
 
     await tool.execute("knowledge", { query: "docs openclaw gateway token" });
@@ -44,11 +45,15 @@ describe("memory domain tools", () => {
       minScore: undefined,
       sessionKey: undefined,
       domain: "docs_kb",
-      sources: ["docs", "repo"],
+      sources: ["memory"],
     });
   });
 
   it("routes history_search to history sources", async () => {
+    resetMemoryToolMockState({
+      statusSources: ["sessions"],
+      searchImpl: async () => [],
+    });
     const tool = createHistorySearchToolOrThrow();
 
     await tool.execute("history", { query: "kemarin saya bilang apa" });
@@ -58,7 +63,7 @@ describe("memory domain tools", () => {
       minScore: undefined,
       sessionKey: undefined,
       domain: "history",
-      sources: ["chat", "email", "sessions"],
+      sources: ["sessions"],
     });
   });
 
@@ -106,6 +111,23 @@ describe("memory domain tools", () => {
     expect(result.details).toEqual({
       path: "memory/knowledge/openclaw-gateway.v1.md",
       text: "# Saved note\n\nGateway token docs",
+    });
+  });
+
+  it("allows history_get to read built-in session transcript paths", async () => {
+    setMemoryReadFileImpl(async (params) => ({
+      path: params.relPath,
+      text: "User: DuckDB lebih cepat dari SQLite",
+    }));
+    const tool = createHistoryGetToolOrThrow();
+
+    const result = await tool.execute("history-get", {
+      path: "sessions/history-proof.jsonl",
+    });
+
+    expect(result.details).toEqual({
+      path: "sessions/history-proof.jsonl",
+      text: "User: DuckDB lebih cepat dari SQLite",
     });
   });
 });

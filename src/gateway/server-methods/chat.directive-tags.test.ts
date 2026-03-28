@@ -326,6 +326,69 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(register).not.toHaveBeenCalled();
   });
 
+  it("chat.send preserves group chatType from the session entry", async () => {
+    createTranscriptFixture("openclaw-chat-send-group-chat-type-");
+    mockState.sessionEntry = { chatType: "group" };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-group-chat-type",
+      requestParams: {
+        sessionKey: "agent:main:telegram:group:ops",
+      },
+      expectBroadcast: false,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockState.lastDispatchCtx?.ChatType).toBe("group");
+    });
+  });
+
+  it("chat.send infers channel chatType from the session key when store metadata is missing", async () => {
+    createTranscriptFixture("openclaw-chat-send-channel-chat-type-");
+    mockState.sessionEntry = {};
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-channel-chat-type",
+      requestParams: {
+        sessionKey: "agent:main:discord:channel:guild-1:channel-2",
+      },
+      expectBroadcast: false,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockState.lastDispatchCtx?.ChatType).toBe("channel");
+    });
+  });
+
+  it("chat.send prefers explicit group chatType from the session key over stale direct metadata", async () => {
+    createTranscriptFixture("openclaw-chat-send-group-chat-type-stale-direct-");
+    mockState.sessionEntry = { chatType: "direct" };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-group-chat-type-stale-direct",
+      requestParams: {
+        sessionKey: "agent:main:telegram:group:ops",
+      },
+      expectBroadcast: false,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockState.lastDispatchCtx?.ChatType).toBe("group");
+    });
+  });
+
   it("chat.inject keeps message defined when directive tag is the only content", async () => {
     createTranscriptFixture("openclaw-chat-inject-directive-only-");
     const respond = vi.fn();
@@ -525,6 +588,38 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(extractFirstTextBlock(chatCall?.[1])).toBe("hello");
   });
 
+  it("chat.inject dedupes repeated writes with the same idempotency key", async () => {
+    createTranscriptFixture("openclaw-chat-inject-idempotency-");
+    const respond = vi.fn();
+    const context = createChatContext();
+    const params = {
+      sessionKey: "main",
+      message: "hello idempotent",
+      idempotencyKey: "mirror:chat-inject-idempotent-1",
+    };
+
+    await chatHandlers["chat.inject"]({
+      params,
+      respond,
+      req: {} as never,
+      client: null as never,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+    });
+    await chatHandlers["chat.inject"]({
+      params,
+      respond,
+      req: {} as never,
+      client: null as never,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+    });
+
+    const raw = fs.readFileSync(mockState.transcriptPath, "utf-8");
+    const matches = raw.match(/hello idempotent/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
   it("chat.send non-streaming final strips external untrusted wrapper metadata from final payload text", async () => {
     createTranscriptFixture("openclaw-chat-send-untrusted-meta-");
     mockState.finalText = `hello\n\n${UNTRUSTED_CONTEXT_SUFFIX}`;
@@ -608,6 +703,252 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         OriginatingTo: "ou_feishu_direct_123",
         ExplicitDeliverRoute: true,
         AccountId: "default",
+      }),
+    );
+  });
+
+  it("chat.send derives external direct sender context from explicit channel sessions", async () => {
+    createTranscriptFixture("openclaw-chat-send-direct-owner-context-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      origin: {
+        provider: "telegram",
+        surface: "telegram",
+        chatType: "direct",
+        from: "telegram:6812765697",
+        to: "telegram:6812765697",
+      },
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:6812765697",
+        accountId: "default",
+      },
+      lastChannel: "telegram",
+      lastTo: "telegram:6812765697",
+      lastAccountId: "default",
+    };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-direct-owner-context",
+      sessionKey: "agent:main:telegram:direct:6812765697",
+      client: {
+        connect: {
+          scopes: ["operator.admin"],
+          client: {
+            id: "cli",
+            mode: GATEWAY_CLIENT_MODES.CLI,
+          },
+        },
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:6812765697",
+        To: "telegram:6812765697",
+        SenderId: "6812765697",
+        ChatType: "direct",
+        OriginatingChannel: "webchat",
+        ExplicitDeliverRoute: false,
+      }),
+    );
+  });
+
+  it("chat.send keeps internal sender context for non-admin clients on explicit direct sessions", async () => {
+    createTranscriptFixture("openclaw-chat-send-nonadmin-owner-context-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      origin: {
+        provider: "telegram",
+        surface: "telegram",
+        chatType: "direct",
+        from: "telegram:6812765697",
+        to: "telegram:6812765697",
+      },
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:6812765697",
+        accountId: "default",
+      },
+      lastChannel: "telegram",
+      lastTo: "telegram:6812765697",
+      lastAccountId: "default",
+    };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-nonadmin-owner-context",
+      sessionKey: "agent:main:telegram:direct:6812765697",
+      client: {
+        connect: {
+          scopes: ["operator.write"],
+          client: {
+            id: "cli",
+            mode: GATEWAY_CLIENT_MODES.CLI,
+          },
+        },
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        Provider: "webchat",
+        Surface: "webchat",
+        From: undefined,
+        To: undefined,
+        SenderId: "cli",
+        ChatType: "direct",
+        OriginatingChannel: "webchat",
+        ExplicitDeliverRoute: false,
+      }),
+    );
+  });
+
+  it("chat.send derives internal direct sender context from explicit webchat sessions for admin clients", async () => {
+    createTranscriptFixture("openclaw-chat-send-admin-webchat-owner-context-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {};
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-admin-webchat-owner-context",
+      sessionKey: "agent:main:webchat:direct:cli",
+      client: {
+        connect: {
+          scopes: ["operator.admin"],
+          client: {
+            id: "cli",
+            mode: GATEWAY_CLIENT_MODES.CLI,
+          },
+        },
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        Provider: "webchat",
+        Surface: "webchat",
+        From: "webchat:cli",
+        To: "webchat:cli",
+        SenderId: "cli",
+        ChatType: "direct",
+        OriginatingChannel: "webchat",
+        ExplicitDeliverRoute: false,
+      }),
+    );
+  });
+
+  it("chat.send derives external direct sender context from explicit channel sessions for local RPC callers", async () => {
+    createTranscriptFixture("openclaw-chat-send-local-rpc-direct-owner-context-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      origin: {
+        provider: "telegram",
+        surface: "telegram",
+        chatType: "direct",
+        from: "telegram:6812765697",
+        to: "telegram:6812765697",
+      },
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:6812765697",
+        accountId: "default",
+      },
+      lastChannel: "telegram",
+      lastTo: "telegram:6812765697",
+      lastAccountId: "default",
+    };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-local-rpc-direct-owner-context",
+      sessionKey: "agent:main:telegram:direct:6812765697",
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:6812765697",
+        To: "telegram:6812765697",
+        SenderId: "6812765697",
+        ChatType: "direct",
+        OriginatingChannel: "webchat",
+        ExplicitDeliverRoute: false,
+      }),
+    );
+  });
+
+  it("chat.send derives external group sender context from explicit channel sessions when origin metadata is available", async () => {
+    createTranscriptFixture("openclaw-chat-send-group-owner-context-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      chatType: "direct",
+      origin: {
+        provider: "telegram",
+        surface: "telegram",
+        chatType: "direct",
+        from: "telegram:6812765697",
+        to: "telegram:ops-room",
+      },
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:ops-room",
+        accountId: "default",
+      },
+      lastChannel: "telegram",
+      lastTo: "telegram:ops-room",
+      lastAccountId: "default",
+    };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-group-owner-context",
+      sessionKey: "agent:main:telegram:group:ops-room",
+      client: {
+        connect: {
+          scopes: ["operator.admin"],
+          client: {
+            id: "cli",
+            mode: GATEWAY_CLIENT_MODES.CLI,
+          },
+        },
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:6812765697",
+        To: "telegram:ops-room",
+        SenderId: "6812765697",
+        ChatType: "group",
+        OriginatingChannel: "webchat",
+        ExplicitDeliverRoute: false,
       }),
     );
   });
@@ -715,6 +1056,42 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         OriginatingTo: "telegram:6812765697",
         ExplicitDeliverRoute: true,
         AccountId: "default",
+        MessageThreadId: "42",
+      }),
+    );
+  });
+
+  it("chat.send rehydrates threaded delivery routes from explicit session keys when the store only has channel metadata", async () => {
+    createTranscriptFixture("openclaw-chat-send-rehydrate-thread-route-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      deliveryContext: {
+        channel: "telegram",
+      },
+      lastChannel: "telegram",
+      origin: {
+        provider: "webchat",
+        surface: "webchat",
+        chatType: "direct",
+      },
+    };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-rehydrate-thread-route",
+      sessionKey: "agent:main:telegram:group:12345:thread:42",
+      deliver: true,
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchCtx).toEqual(
+      expect.objectContaining({
+        OriginatingChannel: "telegram",
+        OriginatingTo: "12345",
+        ExplicitDeliverRoute: true,
         MessageThreadId: "42",
       }),
     );

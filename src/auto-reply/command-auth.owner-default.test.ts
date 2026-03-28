@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveCommandAuthorization } from "./command-auth.js";
 import type { MsgContext } from "./templating.js";
 import { installDiscordRegistryHooks } from "./test-helpers/command-auth-registry-fixture.js";
+
+const { readChannelAllowFromStoreSyncMock } = vi.hoisted(() => ({
+  readChannelAllowFromStoreSyncMock: vi.fn(() => []),
+}));
+
+vi.mock("../pairing/pairing-store.js", () => ({
+  readChannelAllowFromStoreSync: readChannelAllowFromStoreSyncMock,
+}));
 
 installDiscordRegistryHooks();
 
@@ -117,6 +125,59 @@ describe("senderIsOwner only reflects explicit owner authorization", () => {
     });
 
     expect(auth.senderIsOwner).toBe(true);
+    expect(auth.senderIsOwnerExplicit).toBe(true);
+    expect(auth.senderIsOwnerByScope).toBe(false);
+  });
+
+  it("resolves built-in channel owner prefixes without relying on plugin registry aliases", () => {
+    const cfg = {
+      channels: { telegram: {} },
+      commands: { ownerAllowFrom: ["telegram:2081385952"] },
+    } as OpenClawConfig;
+
+    const ctx = {
+      Provider: "telegram",
+      Surface: "telegram",
+      ChatType: "direct",
+      From: "telegram:2081385952",
+      SenderId: "2081385952",
+    } as MsgContext;
+
+    const auth = resolveCommandAuthorization({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(auth.providerId).toBe("telegram");
+    expect(auth.senderIsOwner).toBe(true);
+    expect(auth.senderIsOwnerExplicit).toBe(true);
+  });
+
+  it("falls back to pairing allowFrom stores for built-in direct channels", () => {
+    readChannelAllowFromStoreSyncMock.mockReturnValue(["2081385952"]);
+    const cfg = {
+      channels: { telegram: {} },
+    } as OpenClawConfig;
+
+    const ctx = {
+      Provider: "telegram",
+      Surface: "telegram",
+      ChatType: "direct",
+      From: "telegram:2081385952",
+      SenderId: "2081385952",
+      AccountId: "default",
+    } as MsgContext;
+
+    const auth = resolveCommandAuthorization({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(auth.providerId).toBe("telegram");
+    expect(auth.senderIsOwner).toBe(true);
+    expect(auth.senderIsOwnerExplicit).toBe(true);
   });
 
   it("senderIsOwner is true for internal operator.admin sessions", () => {
@@ -135,5 +196,30 @@ describe("senderIsOwner only reflects explicit owner authorization", () => {
     });
 
     expect(auth.senderIsOwner).toBe(true);
+    expect(auth.senderIsOwnerExplicit).toBe(false);
+    expect(auth.senderIsOwnerByScope).toBe(true);
+  });
+
+  it("matches explicit internal webchat owner prefixes for direct sessions", () => {
+    const cfg = {
+      commands: { ownerAllowFrom: ["telegram:2081385952", "webchat:cli"] },
+    } as OpenClawConfig;
+
+    const ctx = {
+      Provider: "webchat",
+      Surface: "webchat",
+      ChatType: "direct",
+      SenderId: "cli",
+    } as MsgContext;
+
+    const auth = resolveCommandAuthorization({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(auth.senderIsOwner).toBe(true);
+    expect(auth.senderIsOwnerExplicit).toBe(true);
+    expect(auth.ownerList).toEqual(["cli"]);
   });
 });

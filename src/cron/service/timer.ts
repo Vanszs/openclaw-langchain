@@ -1123,8 +1123,11 @@ export async function executeJobCore(
     }
   }
 
-  if (job.payload.kind !== "agentTurn") {
-    return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
+  if (job.payload.kind !== "agentTurn" && job.payload.kind !== "httpAction") {
+    return {
+      status: "skipped",
+      error: "isolated job requires payload.kind=agentTurn or httpAction",
+    };
   }
   if (abortSignal?.aborted) {
     return resolveAbortError();
@@ -1132,7 +1135,7 @@ export async function executeJobCore(
 
   const res = await state.deps.runIsolatedAgentJob({
     job,
-    message: job.payload.message,
+    message: job.payload.kind === "agentTurn" ? job.payload.message : "",
     abortSignal,
   });
 

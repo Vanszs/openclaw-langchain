@@ -48,7 +48,7 @@ export type SessionAcpMeta = {
   lastError?: string;
 };
 
-export type PendingSchedulingKind = "reminder" | "periodic_monitoring";
+export type PendingSchedulingKind = "reminder" | "periodic_monitoring" | "automation";
 
 export type PendingSchedulingExecutor = "cron" | "heartbeat";
 
@@ -69,6 +69,11 @@ export type PendingSchedulingSchedule =
       originalText: string;
     }
   | {
+      mode: "cron";
+      expr: string;
+      originalText: string;
+    }
+  | {
       mode: "unresolved";
       originalText: string;
     };
@@ -78,6 +83,7 @@ export type PendingSchedulingRoute = {
   to?: string;
   accountId?: string;
   threadId?: string | number;
+  replyToId?: string;
 };
 
 export type PendingSchedulingDeliveryChoice =
@@ -96,6 +102,12 @@ export type PendingSchedulingIntent = {
   allowedDeliveryChoices: PendingSchedulingDeliveryChoice[];
   createdAt: number;
   expiresAt: number;
+};
+
+export type LastDeterministicCronJobReference = {
+  id: string;
+  name?: string;
+  updatedAt: number;
 };
 
 export type AcpSessionRuntimeOptions = {
@@ -230,6 +242,7 @@ export type SessionEntry = {
   lastAccountId?: string;
   lastThreadId?: string | number;
   pendingSchedulingIntent?: PendingSchedulingIntent;
+  lastDeterministicCronJob?: LastDeterministicCronJobReference;
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
   acp?: SessionAcpMeta;

@@ -9,12 +9,13 @@ import {
   supportsMemoryMultimodalEmbeddings,
   type MemoryMultimodalSettings,
 } from "../memory/multimodal.js";
+import type { MemorySource } from "../memory/types.js";
 import { clampInt, clampNumber, resolveUserPath } from "../utils.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 
 export type ResolvedMemorySearchConfig = {
   enabled: boolean;
-  sources: Array<"memory" | "sessions">;
+  sources: MemorySource[];
   extraPaths: string[];
   multimodal: MemoryMultimodalSettings;
   provider: "openai" | "local" | "gemini" | "voyage" | "mistral" | "ollama" | "auto";
@@ -65,6 +66,7 @@ export type ResolvedMemorySearchConfig = {
     };
   };
   query: {
+    scope: "global" | "session" | "prefer_session";
     maxResults: number;
     minScore: number;
     hybrid: {
@@ -100,6 +102,7 @@ const DEFAULT_SESSION_DELTA_BYTES = 100_000;
 const DEFAULT_SESSION_DELTA_MESSAGES = 50;
 const DEFAULT_MAX_RESULTS = 6;
 const DEFAULT_MIN_SCORE = 0.35;
+const DEFAULT_QUERY_SCOPE: ResolvedMemorySearchConfig["query"]["scope"] = "prefer_session";
 const DEFAULT_HYBRID_ENABLED = true;
 const DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7;
 const DEFAULT_HYBRID_TEXT_WEIGHT = 0.3;
@@ -109,19 +112,22 @@ const DEFAULT_MMR_LAMBDA = 0.7;
 const DEFAULT_TEMPORAL_DECAY_ENABLED = false;
 const DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS = 30;
 const DEFAULT_CACHE_ENABLED = true;
-const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
+const DEFAULT_SOURCES: MemorySource[] = ["memory"];
 
 function normalizeSources(
-  sources: Array<"memory" | "sessions" | "repo" | "docs" | "chat" | "email"> | undefined,
+  sources: MemorySource[] | undefined,
   sessionMemoryEnabled: boolean,
-): Array<"memory" | "sessions"> {
-  const normalized = new Set<"memory" | "sessions">();
+): MemorySource[] {
+  const normalized = new Set<MemorySource>();
   const input = sources?.length ? sources : DEFAULT_SOURCES;
   for (const source of input) {
-    if (source === "memory") {
+    if (source === "memory" || source === "docs" || source === "repo") {
       normalized.add("memory");
     }
-    if (source === "sessions" && sessionMemoryEnabled) {
+    if (
+      sessionMemoryEnabled &&
+      (source === "sessions" || source === "chat" || source === "email")
+    ) {
       normalized.add("sessions");
     }
   }
@@ -255,7 +261,8 @@ function mergeConfig(
         true,
     },
   };
-  const query = {
+  const query: Pick<ResolvedMemorySearchConfig["query"], "scope" | "maxResults" | "minScore"> = {
+    scope: overrides?.query?.scope ?? defaults?.query?.scope ?? DEFAULT_QUERY_SCOPE,
     maxResults: overrides?.query?.maxResults ?? defaults?.query?.maxResults ?? DEFAULT_MAX_RESULTS,
     minScore: overrides?.query?.minScore ?? defaults?.query?.minScore ?? DEFAULT_MIN_SCORE,
   };

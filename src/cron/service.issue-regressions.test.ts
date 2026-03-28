@@ -85,6 +85,87 @@ describe("Cron issue regressions", () => {
     cron.stop();
   });
 
+  it("accepts isolated httpAction jobs and preserves notify delivery metadata across updates", async () => {
+    const store = makeStorePath();
+    const cron = await startCronForStore({
+      storePath: store.storePath,
+      cronEnabled: false,
+    });
+
+    const created = await cron.add({
+      name: "bathroom-light-on",
+      enabled: true,
+      schedule: { kind: "at", at: "2026-02-06T11:00:00.000Z" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "httpAction",
+        request: {
+          method: "POST",
+          url: "https://example.com/device/on",
+        },
+        success: {
+          summaryText: "Lampu kamar mandi dinyalakan.",
+        },
+      },
+      delivery: {
+        mode: "announce",
+        channel: "telegram",
+        to: "12345",
+        threadId: "topic-1",
+        replyToId: "reply-1",
+      },
+    });
+
+    expect(created.payload.kind).toBe("httpAction");
+    if (created.payload.kind === "httpAction") {
+      expect(created.payload.request.method).toBe("POST");
+      expect(created.payload.request.url).toBe("https://example.com/device/on");
+      expect(created.payload.success?.summaryText).toBe("Lampu kamar mandi dinyalakan.");
+    }
+    expect(created.delivery).toMatchObject({
+      mode: "announce",
+      channel: "telegram",
+      to: "12345",
+      threadId: "topic-1",
+      replyToId: "reply-1",
+    });
+
+    const updated = await cron.update(created.id, {
+      payload: {
+        kind: "httpAction",
+        request: {
+          url: "https://example.com/device/off",
+        },
+        failure: {
+          summaryText: "Gagal mematikan lampu kamar mandi.",
+        },
+      },
+      delivery: {
+        mode: "announce",
+        channel: "telegram",
+        to: "67890",
+      },
+    });
+
+    expect(updated.payload.kind).toBe("httpAction");
+    if (updated.payload.kind === "httpAction") {
+      expect(updated.payload.request.method).toBe("POST");
+      expect(updated.payload.request.url).toBe("https://example.com/device/off");
+      expect(updated.payload.success?.summaryText).toBe("Lampu kamar mandi dinyalakan.");
+      expect(updated.payload.failure?.summaryText).toBe("Gagal mematikan lampu kamar mandi.");
+    }
+    expect(updated.delivery).toMatchObject({
+      mode: "announce",
+      channel: "telegram",
+      to: "67890",
+      threadId: "topic-1",
+      replyToId: "reply-1",
+    });
+
+    cron.stop();
+  });
+
   it("repairs isolated every jobs missing createdAtMs and sets nextWakeAtMs", async () => {
     const store = makeStorePath();
     await writeCronStoreSnapshot(store.storePath, [

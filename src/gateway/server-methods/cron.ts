@@ -1,3 +1,4 @@
+import { loadConfig } from "../../config/config.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import {
   readCronRunLogEntriesPage,
@@ -6,6 +7,11 @@ import {
 } from "../../cron/run-log.js";
 import type { CronJobCreate, CronJobPatch } from "../../cron/types.js";
 import { validateScheduleTimestamp } from "../../cron/validate-timestamp.js";
+import {
+  resolvePinnedHostnameWithPolicy,
+  SsrFBlockedError,
+  type SsrFPolicy,
+} from "../../infra/net/ssrf.js";
 import {
   ErrorCodes,
   errorShape,
@@ -20,6 +26,61 @@ import {
   validateWakeParams,
 } from "../protocol/index.js";
 import type { GatewayRequestHandlers } from "./types.js";
+
+function buildCronHttpActionPolicy(cfg: ReturnType<typeof loadConfig>): SsrFPolicy | undefined {
+  const httpAction = cfg.cron?.httpAction;
+  if (!httpAction) {
+    return undefined;
+  }
+  return {
+    allowPrivateNetwork: httpAction.allowPrivateNetwork === true,
+    allowedHostnames: Array.isArray(httpAction.allowedHostnames)
+      ? httpAction.allowedHostnames
+      : undefined,
+    hostnameAllowlist: Array.isArray(httpAction.hostnameAllowlist)
+      ? httpAction.hostnameAllowlist
+      : undefined,
+  };
+}
+
+async function validateCronHttpActionUrl(
+  url: string | undefined,
+  cfg: ReturnType<typeof loadConfig>,
+): Promise<string | undefined> {
+  const trimmed = typeof url === "string" ? url.trim() : "";
+  if (!trimmed) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return "cron httpAction url must be a valid http or https URL";
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return "cron httpAction url must use http or https";
+  }
+  try {
+    await resolvePinnedHostnameWithPolicy(parsed.hostname, {
+      policy: buildCronHttpActionPolicy(cfg),
+    });
+  } catch (error) {
+    if (error instanceof SsrFBlockedError) {
+      return `cron httpAction target is blocked by SSRF policy: ${error.message}`;
+    }
+  }
+  return undefined;
+}
+
+async function validateCronHttpActionPayload(
+  payload: { kind?: string; request?: { url?: string } } | undefined,
+  cfg: ReturnType<typeof loadConfig>,
+): Promise<string | undefined> {
+  if (payload?.kind !== "httpAction") {
+    return undefined;
+  }
+  return await validateCronHttpActionUrl(payload.request?.url, cfg);
+}
 
 export const cronHandlers: GatewayRequestHandlers = {
   wake: ({ params, respond, context }) => {
@@ -118,6 +179,14 @@ export const cronHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    const httpActionValidation = await validateCronHttpActionPayload(
+      jobCreate.payload,
+      loadConfig(),
+    );
+    if (httpActionValidation) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, httpActionValidation));
+      return;
+    }
     const job = await context.cron.add(jobCreate);
     context.logGateway.info("cron: job created", { jobId: job.id, schedule: jobCreate.schedule });
     respond(true, job, undefined);
@@ -164,6 +233,11 @@ export const cronHandlers: GatewayRequestHandlers = {
         );
         return;
       }
+    }
+    const httpActionValidation = await validateCronHttpActionPayload(patch.payload, loadConfig());
+    if (httpActionValidation) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, httpActionValidation));
+      return;
     }
     const job = await context.cron.update(jobId, patch);
     context.logGateway.info("cron: job updated", { jobId });

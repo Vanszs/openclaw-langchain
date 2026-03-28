@@ -30,6 +30,26 @@ describe("buildDeterministicSelfReplyContext", () => {
     });
   });
 
+  it("prefers configured runtime identity over IDENTITY.md when available", async () => {
+    vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
+      name: "Hypatia",
+    });
+
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [{ id: "main", identity: { name: "OpenClaw" } }],
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      agentId: "main",
+      query: "siapa anda?",
+    });
+
+    expect(result?.directReply.text).toBe("Saya OpenClaw.");
+  });
+
   it("handles broader identity phrasing", async () => {
     vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
       name: "Hypatia",
@@ -42,6 +62,54 @@ describe("buildDeterministicSelfReplyContext", () => {
     });
 
     expect(result?.directReply.text).toBe("Saya Hypatia.");
+  });
+
+  it("answers task phrasing deterministically", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "apa tugas anda?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
+    );
+  });
+
+  it("handles alternate task wording without sentence-specific regexes", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "tugas kamu apa?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
+    );
+  });
+
+  it("keeps role replies canonical across broader paraphrases", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "apa peran anda di sini?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
+    );
+  });
+
+  it("handles broader English role phrasing through the same semantic route", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "what do you do here?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
+    );
   });
 
   it("returns a concise orchestra model summary from config", async () => {
@@ -111,6 +179,24 @@ describe("buildDeterministicSelfReplyContext", () => {
     expect(result?.directReply.text).toBe("Ya. Untuk teks saya memakai gpt-oss-120b.");
   });
 
+  it("handles short runtime model questions without the word orchestra", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openrouter/openai/gpt-oss-120b",
+            },
+          },
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "model apa yang kamu pakai sekarang?",
+    });
+
+    expect(result?.directReply.text).toBe("Untuk teks saya memakai gpt-oss-120b.");
+  });
+
   it("handles typo-tolerant orchestra questions", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: {
@@ -160,6 +246,53 @@ describe("buildDeterministicSelfReplyContext", () => {
     });
 
     expect(result).toBeUndefined();
+  });
+
+  it("handles runtime integration paraphrases without sentence-specific regexes", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        hooks: {
+          enabled: true,
+          gmail: {
+            account: "bevansatriaa@gmail.com",
+          },
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "di runtime ini gmail sama calendar lagi available?",
+    });
+
+    expect(result?.directReply.text).toBe(
+      "Gmail didukung dan saat ini sudah dikonfigurasi untuk bevansatriaa@gmail.com. Google Calendar tidak terdeteksi sebagai integrasi aktif di runtime ini.",
+    );
+  });
+
+  it("answers webhook status from runtime-context phrasing", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        hooks: {
+          enabled: true,
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "runtime ini webhook statusnya gimana?",
+    });
+
+    expect(result?.directReply.text).toBe("Webhook tersedia di runtime ini.");
+  });
+
+  it("answers short webhook runtime-status questions deterministically", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: {
+        hooks: {
+          enabled: true,
+        },
+      },
+      workspaceDir: "/tmp/workspace",
+      query: "webhook aktif?",
+    });
+
+    expect(result?.directReply.text).toBe("Webhook tersedia di runtime ini.");
   });
 
   it("does not hijack generic Gmail or Calendar how-to questions", async () => {

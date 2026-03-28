@@ -8,7 +8,11 @@ import {
   resolveAgentMainSessionKey,
 } from "../config/sessions.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { resolveFailureDestination, sendFailureNotificationAnnounce } from "../cron/delivery.js";
+import {
+  resolveCronDeliveryPlan,
+  resolveFailureDestination,
+  sendFailureNotificationAnnounce,
+} from "../cron/delivery.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { resolveDeliveryTarget } from "../cron/isolated-agent/delivery-target.js";
 import {
@@ -18,12 +22,13 @@ import {
 } from "../cron/run-log.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronStorePath } from "../cron/store.js";
+import type { CronJob } from "../cron/types.js";
 import { normalizeHttpWebhookUrl } from "../cron/webhook-url.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
-import { SsrFBlockedError } from "../infra/net/ssrf.js";
+import { SsrFBlockedError, type SsrFPolicy } from "../infra/net/ssrf.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getChildLogger } from "../logging.js";
@@ -89,6 +94,142 @@ function buildCronWebhookHeaders(webhookToken?: string): Record<string, string> 
     headers.Authorization = `Bearer ${webhookToken}`;
   }
   return headers;
+}
+
+function buildCronHttpActionPolicy(cfg: ReturnType<typeof loadConfig>): SsrFPolicy | undefined {
+  const httpAction = cfg.cron?.httpAction;
+  if (!httpAction) {
+    return undefined;
+  }
+  return {
+    allowPrivateNetwork: httpAction.allowPrivateNetwork === true,
+    allowedHostnames: Array.isArray(httpAction.allowedHostnames)
+      ? httpAction.allowedHostnames
+      : undefined,
+    hostnameAllowlist: Array.isArray(httpAction.hostnameAllowlist)
+      ? httpAction.hostnameAllowlist
+      : undefined,
+  };
+}
+
+async function executeCronHttpAction(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  deps: CliDeps;
+  job: CronJob;
+  agentId: string;
+  abortSignal?: AbortSignal;
+  logger: ReturnType<typeof getChildLogger>;
+}): Promise<{
+  status: "ok" | "error";
+  summary?: string;
+  delivered?: boolean;
+  deliveryAttempted?: boolean;
+}> {
+  if (params.job.payload.kind !== "httpAction") {
+    return {
+      status: "error",
+      summary: "cron httpAction payload is invalid",
+    };
+  }
+
+  const request = params.job.payload.request;
+  const deliveryPlan = resolveCronDeliveryPlan(params.job);
+  const policy = buildCronHttpActionPolicy(params.cfg);
+  const method = request.method;
+  const url = request.url;
+  if (!method || !url) {
+    return {
+      status: "error",
+      summary: "cron httpAction request is incomplete",
+    };
+  }
+
+  try {
+    const result = await fetchWithSsrFGuard({
+      url,
+      policy,
+      timeoutMs: CRON_WEBHOOK_TIMEOUT_MS,
+      signal: params.abortSignal,
+      auditContext: `cron-httpAction:${params.job.id}`,
+      init: {
+        method,
+        headers: request.headers,
+        body: request.body,
+      },
+    });
+    const statusCode = result.response.status;
+    await result.release();
+    const ok =
+      params.job.payload.success?.whenStatus === "any"
+        ? result.response.ok || !Number.isNaN(statusCode)
+        : statusCode >= 200 && statusCode < 300;
+    const summary = ok
+      ? (params.job.payload.success?.summaryText ??
+        `Automation selesai dengan status ${statusCode}.`)
+      : (params.job.payload.failure?.summaryText ??
+        `Automation gagal dengan status ${statusCode}.`);
+
+    let delivered = false;
+    let deliveryAttempted = false;
+    if (deliveryPlan.requested && summary) {
+      const target = await resolveDeliveryTarget(params.cfg, params.agentId, {
+        channel: deliveryPlan.channel,
+        to: deliveryPlan.to,
+        accountId: deliveryPlan.accountId,
+        threadId: deliveryPlan.threadId,
+        replyToId: deliveryPlan.replyToId,
+        sessionKey: params.job.sessionKey,
+      });
+      deliveryAttempted = true;
+      if (!target.ok) {
+        if (!ok) {
+          return {
+            status: "error",
+            summary,
+            deliveryAttempted,
+            delivered: false,
+          };
+        }
+        throw target.error;
+      }
+      const results = await deliverOutboundPayloads({
+        cfg: params.cfg,
+        channel: target.channel,
+        to: target.to,
+        accountId: target.accountId,
+        threadId: target.threadId,
+        replyToId: target.replyToId,
+        payloads: [{ text: summary }],
+        deps: createOutboundSendDeps(params.deps),
+        abortSignal: params.abortSignal,
+      });
+      delivered = results.length > 0;
+    }
+
+    return {
+      status: ok ? "ok" : "error",
+      summary,
+      delivered,
+      deliveryAttempted,
+    };
+  } catch (error) {
+    if (error instanceof SsrFBlockedError) {
+      params.logger.warn(
+        {
+          jobId: params.job.id,
+          target: redactWebhookUrl(url),
+          reason: error.message,
+        },
+        "cron: blocked httpAction target by SSRF guard",
+      );
+    }
+    return {
+      status: "error",
+      summary: params.job.payload.failure?.summaryText ?? formatErrorMessage(error),
+      delivered: false,
+      deliveryAttempted: false,
+    };
+  }
 }
 
 async function postCronWebhook(params: {
@@ -284,6 +425,16 @@ export function buildGatewayCronService(params: {
     },
     runIsolatedAgentJob: async ({ job, message, abortSignal }) => {
       const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
+      if (job.payload.kind === "httpAction") {
+        return await executeCronHttpAction({
+          cfg: runtimeConfig,
+          deps: params.deps,
+          job,
+          agentId,
+          abortSignal,
+          logger: cronLogger,
+        });
+      }
       let sessionKey = `cron:${job.id}`;
       if (job.sessionTarget.startsWith("session:")) {
         const customSessionId = job.sessionTarget.slice(8).trim();

@@ -7,6 +7,7 @@ import {
   isHistoryPath,
   isUserMemoryPath,
   resolveDomainSources,
+  resolveSearchSourcesForDomain,
 } from "../../memory/domain.js";
 import { getMemorySearchManager } from "../../memory/index.js";
 import type { MemoryDomain, MemorySearchResult } from "../../memory/types.js";
@@ -210,14 +211,19 @@ function createDomainSearchTool(
             mode: citationsMode,
             sessionKey: options.agentSessionKey,
           });
+          const status = memory.manager.status();
+          const searchSources = resolveSearchSourcesForDomain({
+            domain: config.domain,
+            requestedSources: resolveDomainSources(config.domain),
+            availableSources: status.sources,
+          });
           const rawResults = await memory.manager.search(query, {
             maxResults,
             minScore,
             sessionKey: options.agentSessionKey,
             domain: config.domain,
-            sources: resolveDomainSources(config.domain),
+            sources: searchSources,
           });
-          const status = memory.manager.status();
           const decorated = decorateResultsForDomain(rawResults, includeCitations);
           const resolved = resolveMemoryBackendConfig({ cfg, agentId });
           const results =

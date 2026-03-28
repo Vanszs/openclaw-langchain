@@ -1207,6 +1207,14 @@ export const FIELD_HELP: Record<string, string> = {
     'Deprecated legacy fallback webhook URL used only for old jobs with `notify=true`. Migrate to per-job delivery using `delivery.mode="webhook"` plus `delivery.to`, and avoid relying on this global field.',
   "cron.webhookToken":
     "Bearer token attached to cron webhook POST deliveries when webhook mode is used. Prefer secret/env substitution and rotate this token regularly if shared webhook endpoints are internet-reachable.",
+  "cron.httpAction":
+    "SSRF guard overrides for scheduled `httpAction` automation calls. Keep private-network access disabled by default and only allow explicit hostnames when you intentionally need LAN/device endpoints.",
+  "cron.httpAction.allowPrivateNetwork":
+    "Allows scheduled httpAction jobs to reach private/LAN addresses when true. Leave false by default and enable only alongside a narrow hostname allowlist for trusted internal devices/services.",
+  "cron.httpAction.allowedHostnames":
+    "Exact hostnames exempted from private-network blocking for scheduled httpAction jobs. Use this for explicit trusted internal hosts instead of broad private-network access.",
+  "cron.httpAction.hostnameAllowlist":
+    "Allowed hostname patterns for scheduled httpAction jobs (for example `device.local` or `*.lan`). Keep this narrow so automation cannot call arbitrary endpoints.",
   "cron.sessionRetention":
     "Controls how long completed cron run sessions are kept before pruning (`24h`, `7d`, `1h30m`, or `false` to disable pruning; default: `24h`). Use shorter retention to reduce storage growth on high-frequency schedules.",
   "cron.runLog":

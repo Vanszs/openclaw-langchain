@@ -44,6 +44,38 @@ describe("cron protocol validators", () => {
     ).toBe(true);
   });
 
+  it("accepts httpAction payloads with explicit reply/thread delivery", () => {
+    expect(
+      validateCronAddParams({
+        name: "bathroom-light-on",
+        schedule: { kind: "cron", expr: "0 2 * * *" },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "httpAction",
+          request: {
+            method: "POST",
+            url: "https://example.com/device/on",
+            headers: {
+              Authorization: "Bearer token",
+            },
+            body: '{"state":"on"}',
+          },
+          success: {
+            summaryText: "Lampu kamar mandi sudah dinyalakan.",
+          },
+        },
+        delivery: {
+          mode: "announce",
+          channel: "googlechat",
+          to: "spaces/AAA",
+          threadId: "spaces/AAA/threads/BBB",
+          replyToId: "spaces/AAA/threads/BBB",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("rejects add params when required scheduling fields are missing", () => {
     const { wakeMode: _wakeMode, ...withoutWakeMode } = minimalAddParams;
     expect(validateCronAddParams(withoutWakeMode)).toBe(false);
@@ -52,6 +84,32 @@ describe("cron protocol validators", () => {
   it("accepts update params for id and jobId selectors", () => {
     expect(validateCronUpdateParams({ id: "job-1", patch: { enabled: false } })).toBe(true);
     expect(validateCronUpdateParams({ jobId: "job-2", patch: { enabled: true } })).toBe(true);
+  });
+
+  it("accepts httpAction update patches and reply routing metadata", () => {
+    expect(
+      validateCronUpdateParams({
+        id: "job-1",
+        patch: {
+          payload: {
+            kind: "httpAction",
+            request: {
+              url: "https://example.com/device/off",
+              method: "PATCH",
+            },
+            failure: {
+              summaryText: "Gagal mematikan lampu.",
+            },
+          },
+          delivery: {
+            mode: "announce",
+            channel: "googlechat",
+            to: "spaces/AAA",
+            replyToId: "spaces/AAA/threads/BBB",
+          },
+        },
+      }),
+    ).toBe(true);
   });
 
   it("accepts remove params for id and jobId selectors", () => {

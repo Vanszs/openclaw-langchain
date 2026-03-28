@@ -1,32 +1,112 @@
 import { loadAgentIdentityFromWorkspace } from "../agents/identity-file.js";
+import { resolveIdentityName } from "../agents/identity.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
 } from "../config/model-input.js";
 import { logVerbose } from "../globals.js";
+import {
+  tokenizeSemanticText,
+  hasSemanticConcept,
+  findSemanticConceptIndex,
+  type SemanticToken,
+} from "./semantic-concepts.js";
 import type { ReplyPayload } from "./types.js";
 
-const IDENTITY_QUERY_RE =
-  /(?:\bsiapa\s+(?:anda|kamu|dirimu)\b|\bwho\s+are\s+you\b|\bwhat\s+is\s+your\s+name\b)/i;
-const GMAIL_CAPABILITY_RE =
-  /\b(gmail|google\s*mail)\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b.*\b(gmail|google\s*mail)\b/i;
-const CALENDAR_CAPABILITY_RE =
-  /\b(calendar|kalender|google\s*calendar|gcal)\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi|buat)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi|buat)\b.*\b(calendar|kalender|google\s*calendar|gcal)\b/i;
-const WEBHOOK_CAPABILITY_RE =
-  /\bwebhook\b.*\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b|\b(terhubung|pakai|memakai|use|using|support|tersedia|available|aktif|configured|setup|integrasi)\b.*\bwebhook\b/i;
-const INTEGRATION_SUBJECT_RE =
-  /\b(anda|kamu|dirimu|you|your|assistant|runtime|instance|environment|server)\b|\b(?:di|in)\s+(?:runtime|lingkungan|environment|instance)\b|\blingkungan\s+ini\b/i;
-const SELF_CUE_RE = /\b(anda|kamu|dirimu|you|your|assistant|ai)\b/i;
-const ORCHESTRA_CUE_RE = /\b(orkestra|orchestra|orchestration|orchestrator|orkestrasi|fallback)\b/i;
-const ORCHESTRA_RUNTIME_RE = /\b(model|ai|llm|runtime|ocr|gambar|image|text|teks)\b/i;
-const ORCHESTRA_DETAIL_RE = /\b(model|models?|ai|llm|ocr|gambar|image|text|teks|fallback)\b/i;
-const ORCHESTRA_STATUS_RE =
-  /\b(pakai|memakai|use|using|terhubung|configured|aktif|enabled|running|jalan|status)\b/i;
-const ORCHESTRA_INVENTORY_RE =
-  /\b(which|what|mana|daftar|list|inventory|punya|memiliki|have|apa\s+saja)\b/i;
-const MUSIC_ORCHESTRA_NEGATIVE_RE =
-  /\b(musik|music|lagu|song|konduktor|conductor|simfoni|symphony|panggung|instrument)\b/i;
+const SELF_SEMANTIC_LEXICON = {
+  self_target: [
+    "anda",
+    "kamu",
+    "dirimu",
+    "you",
+    "your",
+    "assistant",
+    "ai",
+    "anda sendiri",
+    "kamu sendiri",
+  ],
+  runtime_context: ["runtime", "instance", "environment", "server", "lingkungan"],
+  ask_identity: ["siapa", "who", "who are you"],
+  ask_what: ["apa", "what", "mana"],
+  ask_now: ["sekarang", "now"],
+  facet_name: ["name", "nama"],
+  facet_role: [
+    "tugas",
+    "task",
+    "job",
+    "role",
+    "peran",
+    "fungsi",
+    "duty",
+    "kerja",
+    "apa tugas",
+    "apa peran",
+    "kerja apa",
+    "fungsi utama",
+    "what do you do",
+  ],
+  facet_gmail: ["gmail"],
+  facet_calendar: ["calendar", "kalender", "gcal"],
+  facet_webhook: ["webhook"],
+  facet_orchestra: ["orkestra", "orchestra", "orchestration", "orchestrator"],
+  facet_model: [
+    "model",
+    "models",
+    "ai",
+    "llm",
+    "ocr",
+    "gambar",
+    "image",
+    "text",
+    "teks",
+    "fallback",
+  ],
+  qualifier_inventory: [
+    "which",
+    "what",
+    "mana",
+    "daftar",
+    "list",
+    "inventory",
+    "punya",
+    "memiliki",
+    "have",
+  ],
+  qualifier_status: [
+    "pakai",
+    "use",
+    "terhubung",
+    "terhubung dengan",
+    "support",
+    "tersedia",
+    "available",
+    "aktif",
+    "configured",
+    "setup",
+    "integrasi",
+    "buat",
+    "enabled",
+    "running",
+    "jalan",
+    "status",
+    "dipakai",
+    "aktif nggak",
+    "lagi available",
+  ],
+  negative_music: [
+    "musik",
+    "music",
+    "lagu",
+    "song",
+    "konduktor",
+    "conductor",
+    "simfoni",
+    "symphony",
+    "panggung",
+    "instrument",
+  ],
+} satisfies Record<string, readonly string[]>;
 
 export type DeterministicSelfReplyContext = {
   directReply: ReplyPayload;
@@ -39,7 +119,7 @@ type RuntimeOrchestraState = {
   imageFallbacks?: string[];
 };
 
-type SelfIntent = "identity" | "orchestra_status" | "orchestra_inventory" | "integration";
+type SelfIntent = "identity" | "role" | "orchestra_status" | "orchestra_inventory" | "integration";
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -71,49 +151,135 @@ function formatModelLabel(modelRef: string | undefined): string | undefined {
   return parts[parts.length - 1] ?? normalized;
 }
 
-function hasOrchestraContext(query: string): boolean {
-  if (!ORCHESTRA_CUE_RE.test(query)) {
-    return false;
-  }
-  if (MUSIC_ORCHESTRA_NEGATIVE_RE.test(query) && !ORCHESTRA_RUNTIME_RE.test(query)) {
-    return false;
-  }
+function tokenizeSelfSemantics(query: string): SemanticToken[] {
+  return tokenizeSemanticText(query, SELF_SEMANTIC_LEXICON);
+}
+
+function hasIdentityIntent(tokens: SemanticToken[]): boolean {
   return (
-    SELF_CUE_RE.test(query) || ORCHESTRA_RUNTIME_RE.test(query) || ORCHESTRA_STATUS_RE.test(query)
+    (hasSemanticConcept(tokens, "ask_identity") && hasSemanticConcept(tokens, "self_target")) ||
+    (hasSemanticConcept(tokens, "ask_what") &&
+      hasSemanticConcept(tokens, "facet_name") &&
+      hasSemanticConcept(tokens, "self_target"))
   );
 }
 
-function hasIntegrationContext(query: string): boolean {
-  return INTEGRATION_SUBJECT_RE.test(query);
+function hasRoleIntent(tokens: SemanticToken[]): boolean {
+  if (!hasSemanticConcept(tokens, "facet_role")) {
+    return false;
+  }
+  return hasSelfContext(tokens) || hasSemanticConcept(tokens, "ask_what");
+}
+
+function hasSelfContext(tokens: SemanticToken[]): boolean {
+  return hasSemanticConcept(tokens, "self_target") || hasSemanticConcept(tokens, "runtime_context");
+}
+
+function hasRuntimeModelQuestion(tokens: SemanticToken[]): boolean {
+  return (
+    hasSemanticConcept(tokens, "facet_model") &&
+    (hasSemanticConcept(tokens, "qualifier_inventory") ||
+      hasSemanticConcept(tokens, "qualifier_status") ||
+      hasSemanticConcept(tokens, "ask_now") ||
+      hasSemanticConcept(tokens, "ask_what"))
+  );
+}
+
+function asksOrchestraInventory(tokens: SemanticToken[]): boolean {
+  const orchestraIndex = findSemanticConceptIndex(tokens, "facet_orchestra");
+  if (orchestraIndex < 0) {
+    return false;
+  }
+  const trailingWhatIndex = findSemanticConceptIndex(tokens, "ask_what", {
+    fromEnd: true,
+  });
+  return trailingWhatIndex > orchestraIndex;
+}
+
+function hasOrchestraContext(tokens: SemanticToken[]): boolean {
+  if (
+    hasRuntimeModelQuestion(tokens) &&
+    (hasSelfContext(tokens) || hasSemanticConcept(tokens, "ask_now"))
+  ) {
+    return true;
+  }
+  if (!hasSemanticConcept(tokens, "facet_orchestra")) {
+    return false;
+  }
+  if (hasSemanticConcept(tokens, "negative_music") && !hasSemanticConcept(tokens, "facet_model")) {
+    return false;
+  }
+  return (
+    hasSelfContext(tokens) ||
+    hasSemanticConcept(tokens, "facet_model") ||
+    hasSemanticConcept(tokens, "qualifier_status")
+  );
+}
+
+function hasIntegrationContext(tokens: SemanticToken[]): boolean {
+  return hasSelfContext(tokens);
+}
+
+function hasBareRuntimeIntegrationQuestion(tokens: SemanticToken[]): boolean {
+  const wantsIntegration =
+    hasSemanticConcept(tokens, "facet_gmail") ||
+    hasSemanticConcept(tokens, "facet_calendar") ||
+    hasSemanticConcept(tokens, "facet_webhook");
+  if (!wantsIntegration || !hasSemanticConcept(tokens, "qualifier_status")) {
+    return false;
+  }
+
+  const allowedConcepts = new Set([
+    "facet_gmail",
+    "facet_calendar",
+    "facet_webhook",
+    "runtime_context",
+    "ask_now",
+    "qualifier_status",
+    "ask_what",
+  ]);
+  const extraTokens = tokens.filter(
+    (token) =>
+      token.concepts.length === 0 ||
+      token.concepts.every((concept) => !allowedConcepts.has(concept)),
+  );
+  return extraTokens.length === 0;
 }
 
 function detectSelfIntent(query: string): SelfIntent | undefined {
   if (!query) {
     return undefined;
   }
-  if (IDENTITY_QUERY_RE.test(query)) {
+  const tokens = tokenizeSelfSemantics(query);
+  if (hasIdentityIntent(tokens)) {
     return "identity";
   }
+  if (hasRoleIntent(tokens)) {
+    return "role";
+  }
   const asksIntegrationCapability =
-    GMAIL_CAPABILITY_RE.test(query) ||
-    CALENDAR_CAPABILITY_RE.test(query) ||
-    WEBHOOK_CAPABILITY_RE.test(query);
-  if (hasIntegrationContext(query) && asksIntegrationCapability) {
+    hasSemanticConcept(tokens, "qualifier_status") &&
+    (hasSemanticConcept(tokens, "facet_gmail") ||
+      hasSemanticConcept(tokens, "facet_calendar") ||
+      hasSemanticConcept(tokens, "facet_webhook"));
+  if (
+    (hasIntegrationContext(tokens) && asksIntegrationCapability) ||
+    hasBareRuntimeIntegrationQuestion(tokens)
+  ) {
     return "integration";
   }
-  if (!hasOrchestraContext(query)) {
+  if (!hasOrchestraContext(tokens)) {
     return undefined;
   }
   const asksInventory =
-    ORCHESTRA_INVENTORY_RE.test(query) ||
-    ORCHESTRA_DETAIL_RE.test(query) ||
-    /\b(?:orkestra|orchestra|fallback)\b.*\bapa\b/i.test(query) ||
-    /\bapa\b.*\b(?:model|models?|fallback)\b/i.test(query);
-  const asksStatus = ORCHESTRA_STATUS_RE.test(query);
+    hasSemanticConcept(tokens, "qualifier_inventory") ||
+    hasSemanticConcept(tokens, "facet_model") ||
+    asksOrchestraInventory(tokens);
+  const asksStatus = hasSemanticConcept(tokens, "qualifier_status");
   if (asksStatus && !asksInventory) {
     return "orchestra_status";
   }
-  if (asksInventory || ORCHESTRA_RUNTIME_RE.test(query)) {
+  if (asksInventory || hasSemanticConcept(tokens, "facet_model")) {
     return "orchestra_inventory";
   }
   return "orchestra_status";
@@ -127,19 +293,31 @@ function buildIdentityReply(workspaceDir: string): ReplyPayload {
   };
 }
 
+function buildRoleReply(): ReplyPayload {
+  return {
+    text: "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
+  };
+}
+
 function buildOrchestraSummary(cfg: OpenClawConfig, runtime?: RuntimeOrchestraState): string {
   const defaults = cfg.agents?.defaults;
   const textPrimary = formatModelLabel(
     runtime?.textPrimary ?? resolveAgentModelPrimaryValue(defaults?.model),
   );
-  const textFallbacks = (runtime?.textFallbacks ?? resolveAgentModelFallbackValues(defaults?.model))
+  const textFallbacks = (
+    runtime?.textFallbacks && runtime.textFallbacks.length > 0
+      ? runtime.textFallbacks
+      : resolveAgentModelFallbackValues(defaults?.model)
+  )
     .map((entry) => formatModelLabel(entry))
     .filter((entry): entry is string => Boolean(entry));
   const imagePrimary = formatModelLabel(
     runtime?.imagePrimary ?? resolveAgentModelPrimaryValue(defaults?.imageModel),
   );
   const imageFallbacks = (
-    runtime?.imageFallbacks ?? resolveAgentModelFallbackValues(defaults?.imageModel)
+    runtime?.imageFallbacks && runtime.imageFallbacks.length > 0
+      ? runtime.imageFallbacks
+      : resolveAgentModelFallbackValues(defaults?.imageModel)
   )
     .map((entry) => formatModelLabel(entry))
     .filter((entry): entry is string => Boolean(entry));
@@ -189,9 +367,10 @@ function detectCalendarIntegrationEnabled(cfg: OpenClawConfig): boolean {
 }
 
 function buildIntegrationCapabilityReply(cfg: OpenClawConfig, query: string): ReplyPayload {
-  const wantsGmail = /\bgmail\b/i.test(query);
-  const wantsCalendar = /\bcalendar\b|\bkalender\b|\bgcal\b/i.test(query);
-  const wantsWebhook = /\bwebhook\b/i.test(query);
+  const tokens = tokenizeSelfSemantics(query);
+  const wantsGmail = hasSemanticConcept(tokens, "facet_gmail");
+  const wantsCalendar = hasSemanticConcept(tokens, "facet_calendar");
+  const wantsWebhook = hasSemanticConcept(tokens, "facet_webhook");
   const gmailConfigured = Boolean(cfg.hooks?.gmail?.account?.trim());
   const hooksEnabled = cfg.hooks?.enabled !== false;
   const calendarEnabled = detectCalendarIntegrationEnabled(cfg);
@@ -227,6 +406,7 @@ export async function buildDeterministicSelfReplyContext(params: {
   cfg: OpenClawConfig;
   workspaceDir: string;
   query: string;
+  agentId?: string;
   runtime?: RuntimeOrchestraState;
 }): Promise<DeterministicSelfReplyContext | undefined> {
   const query = normalizeSelfQuery(params.query);
@@ -236,14 +416,27 @@ export async function buildDeterministicSelfReplyContext(params: {
   }
   if (intent === "identity") {
     logVerbose("self-facts: matched identity intent");
+    const configuredIdentityName = params.agentId
+      ? resolveIdentityName(params.cfg, params.agentId)
+      : undefined;
     return {
-      directReply: buildIdentityReply(params.workspaceDir),
+      directReply: configuredIdentityName
+        ? {
+            text: `Saya ${configuredIdentityName}.`,
+          }
+        : buildIdentityReply(params.workspaceDir),
     };
   }
   if (intent === "integration") {
     logVerbose("self-facts: matched integration capability intent");
     return {
       directReply: buildIntegrationCapabilityReply(params.cfg, query),
+    };
+  }
+  if (intent === "role") {
+    logVerbose("self-facts: matched role intent");
+    return {
+      directReply: buildRoleReply(),
     };
   }
   logVerbose(`self-facts: matched ${intent} intent`);

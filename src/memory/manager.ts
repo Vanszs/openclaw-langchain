@@ -7,7 +7,7 @@ import type { ResolvedMemorySearchConfig } from "../agents/memory-search.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { inferDomainFromPath, isUserMemoryPath, resolveDomainSources } from "./domain.js";
+import { matchesResultDomain, resolveSearchSourcesForDomain } from "./domain.js";
 import {
   createEmbeddingProvider,
   type EmbeddingProvider,
@@ -285,6 +285,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       sessionKey?: string;
       sources?: MemorySource[];
       domain?: MemoryDomain;
+      scope?: "global" | "session" | "prefer_session";
     },
   ): Promise<MemorySearchResult[]> {
     void this.warmSession(opts?.sessionKey);
@@ -300,12 +301,11 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     const minScore = opts?.minScore ?? this.settings.query.minScore;
     const maxResults = opts?.maxResults ?? this.settings.query.maxResults;
     const requestedSources = new Set(
-      (opts?.sources?.length
-        ? opts.sources
-        : opts?.domain
-          ? resolveDomainSources(opts.domain)
-          : this.settings.sources
-      ).filter((source) => this.sources.has(source)),
+      resolveSearchSourcesForDomain({
+        domain: opts?.domain,
+        requestedSources: opts?.sources?.length ? opts.sources : undefined,
+        availableSources: this.sources,
+      }),
     );
     const requestedDomain = opts?.domain;
     const matchesRequest = (entry: MemorySearchResult) => {
@@ -315,14 +315,11 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       if (!requestedDomain) {
         return true;
       }
-      const inferred = inferDomainFromPath(entry.path);
-      if (inferred) {
-        return inferred === requestedDomain;
-      }
-      if (requestedDomain === "user_memory") {
-        return isUserMemoryPath(entry.path);
-      }
-      return requestedSources.has(entry.source);
+      return matchesResultDomain({
+        domain: requestedDomain,
+        path: entry.path,
+        source: entry.source,
+      });
     };
     const hybrid = this.settings.query.hybrid;
     const candidates = Math.min(

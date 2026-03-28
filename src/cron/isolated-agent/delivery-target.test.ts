@@ -93,7 +93,7 @@ function setStoredWhatsAppAllowFrom(allowFrom: string[]) {
 
 async function resolveForAgent(params: {
   cfg: OpenClawConfig;
-  target?: { channel?: "last" | "telegram"; to?: string };
+  target?: { channel?: "last" | "telegram" | "webchat"; to?: string };
 }) {
   const channel = params.target ? params.target.channel : DEFAULT_TARGET.channel;
   const to = params.target && "to" in params.target ? params.target.to : DEFAULT_TARGET.to;
@@ -333,6 +333,25 @@ describe("resolveDeliveryTarget", () => {
     expect(result.channel).toBe("telegram");
     expect(result.to).toBe("987654");
     expect(result.ok).toBe(true);
+  });
+
+  it("resolves webchat delivery directly to the target session key", async () => {
+    setMainSessionEntry(undefined);
+    vi.mocked(maybeResolveIdLikeTarget).mockClear();
+
+    const result = await resolveDeliveryTarget(makeCfg({ bindings: [] }), AGENT_ID, {
+      channel: "webchat",
+      to: "main",
+      sessionKey: "main",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      channel: "webchat",
+      to: "main",
+      mode: "explicit",
+    });
+    expect(maybeResolveIdLikeTarget).not.toHaveBeenCalled();
   });
 
   it("explicit delivery.accountId overrides session-derived accountId", async () => {

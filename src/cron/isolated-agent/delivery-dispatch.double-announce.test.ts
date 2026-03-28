@@ -22,8 +22,16 @@ vi.mock("../../infra/outbound/deliver.js", () => ({
   deliverOutboundPayloads: vi.fn().mockResolvedValue([{ ok: true }]),
 }));
 
+vi.mock("../../gateway/call.js", () => ({
+  callGateway: vi.fn(),
+}));
+
 vi.mock("../../infra/outbound/identity.js", () => ({
   resolveAgentOutboundIdentity: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock("../../config/sessions/delivery-info.js", () => ({
+  findMirroredTranscriptSessionKey: vi.fn().mockReturnValue(undefined),
 }));
 
 vi.mock("../../infra/outbound/session-context.js", () => ({
@@ -47,6 +55,8 @@ vi.mock("./subagent-followup.js", () => ({
 
 // Import after mocks
 import { countActiveDescendantRuns } from "../../agents/subagent-registry.js";
+import { findMirroredTranscriptSessionKey } from "../../config/sessions/delivery-info.js";
+import { callGateway } from "../../gateway/call.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { shouldEnqueueCronMainSummary } from "../heartbeat-policy.js";
 import {
@@ -136,6 +146,7 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     vi.clearAllMocks();
     resetCompletedDirectCronDeliveriesForTests();
     vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(findMirroredTranscriptSessionKey).mockReturnValue(undefined);
     vi.mocked(expectsSubagentFollowup).mockReturnValue(false);
     vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
     vi.mocked(readDescendantSubagentFallbackReply).mockResolvedValue(undefined);
@@ -229,6 +240,36 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     );
     expect(deliverOutboundPayloads).toHaveBeenCalledWith(
       expect.objectContaining({ skipQueue: true }),
+    );
+  });
+
+  it("mirrors direct cron deliveries into the matched target session transcript", async () => {
+    vi.mocked(findMirroredTranscriptSessionKey).mockReturnValue(
+      "agent:main:telegram:direct:2081385952",
+    );
+
+    const params = makeBaseParams({ synthesizedText: "Configured channel reminder." });
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.delivered).toBe(true);
+    expect(deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mirror: expect.objectContaining({
+          agentId: "main",
+          sessionKey: "agent:main:telegram:direct:2081385952",
+          text: "Configured channel reminder.",
+        }),
+      }),
+    );
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "chat.inject",
+        params: expect.objectContaining({
+          sessionKey: "agent:main:telegram:direct:2081385952",
+          message: "Configured channel reminder.",
+          idempotencyKey: expect.stringMatching(/^mirror:cron-direct-delivery:v1:/),
+        }),
+      }),
     );
   });
 
@@ -439,6 +480,81 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     expect(deliverOutboundPayloads).toHaveBeenCalledWith(
       expect.objectContaining({ skipQueue: true }),
     );
+  });
+
+  it("propagates replyToId on same-thread direct delivery", async () => {
+    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
+    vi.mocked(deliverOutboundPayloads).mockResolvedValue([{ ok: true } as never]);
+
+    const params = makeBaseParams({ synthesizedText: "Masuk lagi ke thread asal." });
+    params.resolvedDelivery = {
+      ...params.resolvedDelivery,
+      channel: "googlechat",
+      to: "spaces/AAA",
+      replyToId: "spaces/AAA/threads/BBB",
+    };
+
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.delivered).toBe(true);
+    expect(state.deliveryAttempted).toBe(true);
+    expect(deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "googlechat",
+        to: "spaces/AAA",
+        replyToId: "spaces/AAA/threads/BBB",
+      }),
+    );
+  });
+
+  it("does not delete a live user session after same-chat one-shot delivery", async () => {
+    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
+    vi.mocked(deliverOutboundPayloads).mockResolvedValue([{ ok: true } as never]);
+    vi.mocked(callGateway).mockReset();
+
+    const params = makeBaseParams({ synthesizedText: "Reminder delivered." });
+    params.job = {
+      ...params.job,
+      deleteAfterRun: true,
+      sessionTarget: "current",
+    } as never;
+    params.agentSessionKey = "agent:main:telegram:direct:12345";
+
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.delivered).toBe(true);
+    expect(state.deliveryAttempted).toBe(true);
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("injects same-chat webchat deliveries through chat.inject instead of outbound send", async () => {
+    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
+    vi.mocked(deliverOutboundPayloads).mockResolvedValue([{ ok: true } as never]);
+    vi.mocked(callGateway).mockResolvedValue({ ok: true } as never);
+
+    const params = makeBaseParams({ synthesizedText: "Reminder delivered in webchat." });
+    params.resolvedDelivery = {
+      ...params.resolvedDelivery,
+      channel: "webchat",
+      to: "main",
+    };
+
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.delivered).toBe(true);
+    expect(state.deliveryAttempted).toBe(true);
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "chat.inject",
+      params: {
+        sessionKey: "main",
+        message: "Reminder delivered in webchat.",
+      },
+      timeoutMs: 10_000,
+    });
+    expect(deliverOutboundPayloads).not.toHaveBeenCalled();
   });
 
   it("transient retry delivers exactly once with skipQueue on both attempts", async () => {

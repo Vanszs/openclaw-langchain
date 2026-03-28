@@ -10,12 +10,16 @@ const {
   requestHeartbeatNowMock,
   loadConfigMock,
   fetchWithSsrFGuardMock,
+  deliverOutboundPayloadsMock,
+  resolveDeliveryTargetMock,
   runCronIsolatedAgentTurnMock,
 } = vi.hoisted(() => ({
   enqueueSystemEventMock: vi.fn(),
   requestHeartbeatNowMock: vi.fn(),
   loadConfigMock: vi.fn(),
   fetchWithSsrFGuardMock: vi.fn(),
+  deliverOutboundPayloadsMock: vi.fn(),
+  resolveDeliveryTargetMock: vi.fn(),
   runCronIsolatedAgentTurnMock: vi.fn(async () => ({ status: "ok" as const, summary: "ok" })),
 }));
 
@@ -47,8 +51,16 @@ vi.mock("../infra/net/fetch-guard.js", () => ({
   fetchWithSsrFGuard: fetchWithSsrFGuardMock,
 }));
 
+vi.mock("../infra/outbound/deliver.js", () => ({
+  deliverOutboundPayloads: deliverOutboundPayloadsMock,
+}));
+
 vi.mock("../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: runCronIsolatedAgentTurnMock,
+}));
+
+vi.mock("../cron/isolated-agent/delivery-target.js", () => ({
+  resolveDeliveryTarget: resolveDeliveryTargetMock,
 }));
 
 import { buildGatewayCronService } from "./server-cron.js";
@@ -71,7 +83,26 @@ describe("buildGatewayCronService", () => {
     requestHeartbeatNowMock.mockClear();
     loadConfigMock.mockClear();
     fetchWithSsrFGuardMock.mockClear();
+    deliverOutboundPayloadsMock.mockReset();
+    resolveDeliveryTargetMock.mockReset();
     runCronIsolatedAgentTurnMock.mockClear();
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: {
+        status: 204,
+        ok: true,
+      },
+      release: vi.fn().mockResolvedValue(undefined),
+    });
+    deliverOutboundPayloadsMock.mockResolvedValue([{ ok: true }]);
+    resolveDeliveryTargetMock.mockResolvedValue({
+      ok: true,
+      channel: "telegram",
+      to: "12345",
+      accountId: undefined,
+      threadId: "thread-1",
+      replyToId: "reply-1",
+      mode: "explicit",
+    });
   });
 
   it("routes main-target jobs to the scoped session for enqueue + wake", async () => {
@@ -192,6 +223,148 @@ describe("buildGatewayCronService", () => {
           sessionKey: "project-alpha-monitor",
         }),
       );
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("runs httpAction separately from notify delivery and only allows private targets through explicit allowlists", async () => {
+    const cfg = createCronConfig("server-cron-http-action");
+    cfg.cron = {
+      ...cfg.cron,
+      httpAction: {
+        allowedHostnames: ["127.0.0.1"],
+        hostnameAllowlist: ["127.0.0.1"],
+      },
+    };
+    loadConfigMock.mockReturnValue(cfg);
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      const job = await state.cron.add({
+        name: "bathroom-light-on",
+        enabled: true,
+        schedule: { kind: "at", at: new Date(1).toISOString() },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "httpAction",
+          request: {
+            method: "POST",
+            url: "http://127.0.0.1:18789/actions/light-on",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: '{"device":"bathroom-light","state":"on"}',
+          },
+          success: {
+            summaryText: "Lampu kamar mandi sudah dinyalakan.",
+          },
+        },
+        delivery: {
+          mode: "announce",
+          channel: "telegram",
+          to: "12345",
+          threadId: "thread-1",
+          replyToId: "reply-1",
+        },
+      });
+
+      await state.cron.run(job.id, "force");
+
+      expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://127.0.0.1:18789/actions/light-on",
+          policy: {
+            allowPrivateNetwork: false,
+            allowedHostnames: ["127.0.0.1"],
+            hostnameAllowlist: ["127.0.0.1"],
+          },
+          init: {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: '{"device":"bathroom-light","state":"on"}',
+          },
+        }),
+      );
+      expect(resolveDeliveryTargetMock).toHaveBeenCalledWith(
+        cfg,
+        "main",
+        expect.objectContaining({
+          channel: "telegram",
+          to: "12345",
+          threadId: "thread-1",
+          replyToId: "reply-1",
+        }),
+      );
+      expect(deliverOutboundPayloadsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "telegram",
+          to: "12345",
+          threadId: "thread-1",
+          replyToId: "reply-1",
+          payloads: [{ text: "Lampu kamar mandi sudah dinyalakan." }],
+        }),
+      );
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("blocks private httpAction targets by default when no explicit allowlist is configured", async () => {
+    const cfg = createCronConfig("server-cron-http-action-default-block");
+    loadConfigMock.mockReturnValue(cfg);
+    fetchWithSsrFGuardMock.mockRejectedValueOnce(
+      new SsrFBlockedError("Blocked: resolves to private/internal/special-use IP address"),
+    );
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      const job = await state.cron.add({
+        name: "bathroom-light-on-private-default-blocked",
+        enabled: true,
+        schedule: { kind: "at", at: new Date(1).toISOString() },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "httpAction",
+          request: {
+            method: "POST",
+            url: "http://127.0.0.1:18789/actions/light-on",
+          },
+          failure: {
+            summaryText: "Automation gagal: light-on",
+          },
+        },
+        delivery: {
+          mode: "announce",
+          channel: "telegram",
+          to: "12345",
+        },
+      });
+
+      await state.cron.run(job.id, "force");
+
+      expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://127.0.0.1:18789/actions/light-on",
+          policy: undefined,
+        }),
+      );
+      expect(resolveDeliveryTargetMock).not.toHaveBeenCalled();
+      expect(deliverOutboundPayloadsMock).not.toHaveBeenCalled();
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
     } finally {
       state.cron.stop();
     }

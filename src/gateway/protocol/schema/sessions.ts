@@ -1,6 +1,36 @@
 import { Type } from "@sinclair/typebox";
 import { NonEmptyString, SessionLabelString } from "./primitives.js";
 
+const SessionRouteChatTypeSchema = Type.String({
+  enum: ["direct", "group", "channel"],
+});
+
+const SessionRouteThreadIdSchema = Type.Union([Type.Integer(), NonEmptyString]);
+
+const SessionOriginPatchSchema = Type.Object(
+  {
+    label: Type.Optional(NonEmptyString),
+    provider: Type.Optional(NonEmptyString),
+    surface: Type.Optional(NonEmptyString),
+    chatType: Type.Optional(SessionRouteChatTypeSchema),
+    from: Type.Optional(NonEmptyString),
+    to: Type.Optional(NonEmptyString),
+    accountId: Type.Optional(NonEmptyString),
+    threadId: Type.Optional(SessionRouteThreadIdSchema),
+  },
+  { additionalProperties: false },
+);
+
+const SessionDeliveryContextPatchSchema = Type.Object(
+  {
+    channel: Type.Optional(NonEmptyString),
+    to: Type.Optional(NonEmptyString),
+    accountId: Type.Optional(NonEmptyString),
+    threadId: Type.Optional(SessionRouteThreadIdSchema),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionsListParamsSchema = Type.Object(
   {
     limit: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -121,6 +151,13 @@ export const SessionsPatchParamsSchema = Type.Object(
     spawnedBy: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     spawnedWorkspaceDir: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     spawnDepth: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
+    chatType: Type.Optional(SessionRouteChatTypeSchema),
+    origin: Type.Optional(SessionOriginPatchSchema),
+    deliveryContext: Type.Optional(SessionDeliveryContextPatchSchema),
+    lastChannel: Type.Optional(NonEmptyString),
+    lastTo: Type.Optional(NonEmptyString),
+    lastAccountId: Type.Optional(NonEmptyString),
+    lastThreadId: Type.Optional(SessionRouteThreadIdSchema),
     subagentRole: Type.Optional(
       Type.Union([Type.Literal("orchestrator"), Type.Literal("leaf"), Type.Null()]),
     ),

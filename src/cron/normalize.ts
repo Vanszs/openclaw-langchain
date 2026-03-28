@@ -91,12 +91,15 @@ function coercePayload(payload: UnknownRecord) {
     next.kind = "agentTurn";
   } else if (kindRaw === "systemevent") {
     next.kind = "systemEvent";
+  } else if (kindRaw === "httpaction") {
+    next.kind = "httpAction";
   } else if (kindRaw) {
     next.kind = kindRaw;
   }
   if (!next.kind) {
     const hasMessage = typeof next.message === "string" && next.message.trim().length > 0;
     const hasText = typeof next.text === "string" && next.text.trim().length > 0;
+    const hasHttpActionHint = isRecord(next.request);
     const hasAgentTurnHint =
       typeof next.model === "string" ||
       typeof next.thinking === "string" ||
@@ -106,6 +109,8 @@ function coercePayload(payload: UnknownRecord) {
       next.kind = "agentTurn";
     } else if (hasText) {
       next.kind = "systemEvent";
+    } else if (hasHttpActionHint) {
+      next.kind = "httpAction";
     } else if (hasAgentTurnHint) {
       // Accept partial agentTurn payload patches that only tweak agent-turn-only fields.
       next.kind = "agentTurn";
@@ -160,6 +165,40 @@ function coercePayload(payload: UnknownRecord) {
   ) {
     delete next.allowUnsafeExternalContent;
   }
+  if (next.kind === "httpAction" && isRecord(next.request)) {
+    const request = { ...next.request };
+    if (typeof request.url === "string") {
+      const trimmed = request.url.trim();
+      if (trimmed) {
+        request.url = trimmed;
+      } else {
+        delete request.url;
+      }
+    }
+    if (typeof request.method === "string") {
+      const normalizedMethod = request.method.trim().toUpperCase();
+      if (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(normalizedMethod)) {
+        request.method = normalizedMethod;
+      } else {
+        delete request.method;
+      }
+    }
+    if (isRecord(request.headers)) {
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries(request.headers)) {
+        if (typeof value === "string" && key.trim()) {
+          headers[key.trim()] = value;
+        }
+      }
+      request.headers = headers;
+    } else if ("headers" in request) {
+      delete request.headers;
+    }
+    if ("body" in request && typeof request.body !== "string") {
+      delete request.body;
+    }
+    next.request = request;
+  }
   return next;
 }
 
@@ -202,6 +241,25 @@ function coerceDelivery(delivery: UnknownRecord) {
     }
   } else if ("accountId" in next && typeof next.accountId !== "string") {
     delete next.accountId;
+  }
+  if (
+    (typeof delivery.threadId === "string" && delivery.threadId.trim()) ||
+    typeof delivery.threadId === "number"
+  ) {
+    next.threadId =
+      typeof delivery.threadId === "string" ? delivery.threadId.trim() : delivery.threadId;
+  } else if ("threadId" in next) {
+    delete next.threadId;
+  }
+  if (typeof delivery.replyToId === "string") {
+    const trimmed = delivery.replyToId.trim();
+    if (trimmed) {
+      next.replyToId = trimmed;
+    } else {
+      delete next.replyToId;
+    }
+  } else if ("replyToId" in next && typeof next.replyToId !== "string") {
+    delete next.replyToId;
   }
   return next;
 }
@@ -443,11 +501,11 @@ export function normalizeCronJobInput(
       const kind = typeof next.payload.kind === "string" ? next.payload.kind : "";
       // Keep default behavior unchanged for backward compatibility:
       // - systemEvent defaults to "main"
-      // - agentTurn defaults to "isolated" (NOT "current", to avoid token accumulation)
+      // - agentTurn/httpAction defaults to "isolated" (NOT "current", to avoid token accumulation)
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
       if (kind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (kind === "agentTurn" || kind === "httpAction") {
         next.sessionTarget = "isolated";
       }
     }

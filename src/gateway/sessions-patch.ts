@@ -17,6 +17,7 @@ import {
   normalizeUsageDisplay,
   supportsXHighThinking,
 } from "../auto-reply/thinking.js";
+import { normalizeChatType } from "../channels/chat-type.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import {
@@ -29,6 +30,9 @@ import { applyVerboseOverride, parseVerboseOverride } from "../sessions/level-ov
 import { applyModelOverrideToSessionEntry } from "../sessions/model-overrides.js";
 import { normalizeSendPolicy } from "../sessions/send-policy.js";
 import { parseSessionLabel } from "../sessions/session-label.js";
+import { normalizeAccountId } from "../utils/account-id.js";
+import { normalizeSessionDeliveryFields } from "../utils/delivery-context.js";
+import { normalizeMessageChannel } from "../utils/message-channel.js";
 import {
   ErrorCodes,
   type ErrorShape,
@@ -82,6 +86,65 @@ function normalizeSubagentControlScope(raw: string): "children" | "none" | undef
     return normalized;
   }
   return undefined;
+}
+
+function normalizeThreadId(raw: string | number | null | undefined): string | number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.trunc(raw);
+  }
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeSessionOriginPatch(
+  raw: NonNullable<SessionsPatchParams["origin"]>,
+): SessionEntry["origin"] | undefined {
+  const label = typeof raw.label === "string" ? raw.label.trim() : undefined;
+  const provider =
+    typeof raw.provider === "string"
+      ? (normalizeMessageChannel(raw.provider) ?? raw.provider.trim())
+      : undefined;
+  const surface =
+    typeof raw.surface === "string"
+      ? (normalizeMessageChannel(raw.surface) ?? raw.surface.trim())
+      : undefined;
+  const chatType = typeof raw.chatType === "string" ? normalizeChatType(raw.chatType) : undefined;
+  const from = typeof raw.from === "string" ? raw.from.trim() : undefined;
+  const to = typeof raw.to === "string" ? raw.to.trim() : undefined;
+  const accountId = normalizeAccountId(raw.accountId);
+  const threadId = normalizeThreadId(raw.threadId);
+  if (!label && !provider && !surface && !chatType && !from && !to && !accountId && !threadId) {
+    return undefined;
+  }
+  const origin: NonNullable<SessionEntry["origin"]> = {};
+  if (label) {
+    origin.label = label;
+  }
+  if (provider) {
+    origin.provider = provider;
+  }
+  if (surface) {
+    origin.surface = surface;
+  }
+  if (chatType) {
+    origin.chatType = chatType;
+  }
+  if (from) {
+    origin.from = from;
+  }
+  if (to) {
+    origin.to = to;
+  }
+  if (accountId) {
+    origin.accountId = accountId;
+  }
+  if (threadId != null) {
+    origin.threadId = threadId;
+  }
+  return origin;
 }
 
 export async function applySessionsPatchToStore(params: {
@@ -212,6 +275,69 @@ export async function applySessionsPatchToStore(params: {
       }
       next.subagentControlScope = normalized;
     }
+  }
+
+  if ("chatType" in patch && patch.chatType !== undefined) {
+    const normalized = normalizeChatType(String(patch.chatType));
+    if (!normalized) {
+      return invalid('invalid chatType (use "direct", "group", or "channel")');
+    }
+    next.chatType = normalized;
+  }
+
+  if ("origin" in patch && patch.origin !== undefined) {
+    const normalized = normalizeSessionOriginPatch(patch.origin);
+    if (!normalized) {
+      return invalid("invalid origin: at least one non-empty field is required");
+    }
+    next.origin = {
+      ...next.origin,
+      ...normalized,
+    };
+  }
+
+  if (
+    "deliveryContext" in patch ||
+    "lastChannel" in patch ||
+    "lastTo" in patch ||
+    "lastAccountId" in patch ||
+    "lastThreadId" in patch
+  ) {
+    const currentDelivery = normalizeSessionDeliveryFields({
+      channel: next.channel,
+      lastChannel: next.lastChannel,
+      lastTo: next.lastTo,
+      lastAccountId: next.lastAccountId,
+      lastThreadId: next.lastThreadId ?? next.deliveryContext?.threadId ?? next.origin?.threadId,
+      deliveryContext: next.deliveryContext,
+    });
+    const requestedDelivery = normalizeSessionDeliveryFields({
+      channel:
+        patch.deliveryContext?.channel ??
+        (typeof patch.lastChannel === "string" ? patch.lastChannel : undefined),
+      lastChannel:
+        typeof patch.lastChannel === "string" ? patch.lastChannel : patch.deliveryContext?.channel,
+      lastTo: typeof patch.lastTo === "string" ? patch.lastTo : patch.deliveryContext?.to,
+      lastAccountId:
+        typeof patch.lastAccountId === "string"
+          ? patch.lastAccountId
+          : patch.deliveryContext?.accountId,
+      lastThreadId: patch.lastThreadId ?? patch.deliveryContext?.threadId,
+      deliveryContext: patch.deliveryContext,
+    });
+    const mergedDelivery = normalizeSessionDeliveryFields({
+      channel: next.channel,
+      lastChannel: requestedDelivery.lastChannel ?? currentDelivery.lastChannel,
+      lastTo: requestedDelivery.lastTo ?? currentDelivery.lastTo,
+      lastAccountId: requestedDelivery.lastAccountId ?? currentDelivery.lastAccountId,
+      lastThreadId: requestedDelivery.lastThreadId ?? currentDelivery.lastThreadId,
+      deliveryContext: requestedDelivery.deliveryContext ?? currentDelivery.deliveryContext,
+    });
+    next.deliveryContext = mergedDelivery.deliveryContext;
+    next.lastChannel = mergedDelivery.lastChannel;
+    next.lastTo = mergedDelivery.lastTo;
+    next.lastAccountId = mergedDelivery.lastAccountId;
+    next.lastThreadId = mergedDelivery.lastThreadId;
   }
 
   if ("label" in patch) {

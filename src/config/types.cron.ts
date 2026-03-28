@@ -57,4 +57,9 @@ export type CronConfig = {
   failureAlert?: CronFailureAlertConfig;
   /** Default destination for failure notifications across all cron jobs. */
   failureDestination?: CronFailureDestinationConfig;
+  httpAction?: {
+    allowPrivateNetwork?: boolean;
+    allowedHostnames?: string[];
+    hostnameAllowlist?: string[];
+  };
 };

@@ -697,12 +697,6 @@ export abstract class MemoryManagerSyncOps {
     needsFullReindex: boolean;
     progress?: MemorySyncProgressState;
   }) {
-    // FTS-only mode: skip embedding sync (no provider)
-    if (!this.provider) {
-      log.debug("Skipping memory file sync in FTS-only mode (no embedding provider)");
-      return;
-    }
-
     const files = await listMemoryFiles(
       this.workspaceDir,
       this.settings.extraPaths,
@@ -776,9 +770,15 @@ export abstract class MemoryManagerSyncOps {
       this.db.prepare(`DELETE FROM chunks WHERE path = ? AND source = ?`).run(stale.path, "memory");
       if (this.fts.enabled && this.fts.available) {
         try {
-          this.db
-            .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
-            .run(stale.path, "memory", this.provider.model);
+          if (this.provider) {
+            this.db
+              .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
+              .run(stale.path, "memory", this.provider.model);
+          } else {
+            this.db
+              .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ?`)
+              .run(stale.path, "memory");
+          }
         } catch {}
       }
     }
@@ -789,12 +789,6 @@ export abstract class MemoryManagerSyncOps {
     targetSessionFiles?: string[];
     progress?: MemorySyncProgressState;
   }) {
-    // FTS-only mode: skip embedding sync (no provider)
-    if (!this.provider) {
-      log.debug("Skipping session file sync in FTS-only mode (no embedding provider)");
-      return;
-    }
-
     const targetSessionFiles = params.needsFullReindex
       ? null
       : this.normalizeTargetSessionFiles(params.targetSessionFiles);
@@ -899,9 +893,15 @@ export abstract class MemoryManagerSyncOps {
         .run(stale.path, "sessions");
       if (this.fts.enabled && this.fts.available) {
         try {
-          this.db
-            .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
-            .run(stale.path, "sessions", this.provider.model);
+          if (this.provider) {
+            this.db
+              .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
+              .run(stale.path, "sessions", this.provider.model);
+          } else {
+            this.db
+              .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ?`)
+              .run(stale.path, "sessions");
+          }
         } catch {}
       }
     }

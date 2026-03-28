@@ -472,6 +472,39 @@ describe("LangchainMemoryManager", () => {
     expect(results[0]?.path).toContain("memory/facts/preferences/");
   });
 
+  it("returns exact user-memory matches even when the vector store is unavailable", async () => {
+    testState.agentConfig = {
+      ...testState.agentConfig,
+      sources: ["memory"],
+    };
+
+    await upsertUserMemoryFact({
+      workspaceDir,
+      namespace: "profile",
+      key: "name.full",
+      value: "Typed Check",
+      provenance: { source: "test" },
+    });
+
+    const manager = new LangchainMemoryManager(cfg, "main", workspaceDir);
+    const managerInternal = manager as unknown as {
+      getVectorStoreForDomain: (plugin: unknown, domain: unknown) => Promise<never>;
+    };
+    const getVectorStoreForDomain = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
+    managerInternal.getVectorStoreForDomain = getVectorStoreForDomain;
+
+    const results = await manager.search("Typed Check", {
+      domain: "user_memory",
+      scope: "global",
+      maxResults: 1,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.source).toBe("memory");
+    expect(results[0]?.snippet).toContain("Typed Check");
+    expect(getVectorStoreForDomain).not.toHaveBeenCalled();
+  });
+
   it("boosts exact durable memory marker matches ahead of generic vector hits", async () => {
     testState.agentConfig = {
       ...testState.agentConfig,

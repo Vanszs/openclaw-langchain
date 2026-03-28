@@ -7,7 +7,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { writeFileWithinRoot } from "../infra/fs-safe.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { inferDomainFromPath, isUserMemoryPath, resolveDomainSources } from "./domain.js";
+import { matchesResultDomain, resolveSearchSourcesForDomain } from "./domain.js";
 import { isFileMissingError, statRegularFile } from "./fs-utils.js";
 import { resolveCliSpawnInvocation, runCliCommand } from "./qmd-process.js";
 import { deriveQmdScopeChannel, deriveQmdScopeChatType, isQmdScopeAllowed } from "./qmd-scope.js";
@@ -731,6 +731,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       sessionKey?: string;
       sources?: MemorySource[];
       domain?: MemoryDomain;
+      scope?: "global" | "session" | "prefer_session";
     },
   ): Promise<MemorySearchResult[]> {
     if (!this.isScopeAllowed(opts?.sessionKey)) {
@@ -842,12 +843,11 @@ export class QmdMemoryManager implements MemorySearchManager {
     }
     const results: MemorySearchResult[] = [];
     const requestedSources = new Set(
-      (opts?.sources?.length
-        ? opts.sources
-        : opts?.domain
-          ? resolveDomainSources(opts.domain)
-          : Array.from(this.sources)
-      ).filter((source) => this.sources.has(source)),
+      resolveSearchSourcesForDomain({
+        domain: opts?.domain,
+        requestedSources: opts?.sources?.length ? opts.sources : undefined,
+        availableSources: this.sources,
+      }),
     );
     for (const entry of parsed) {
       const docHints = this.normalizeDocHints({
@@ -868,14 +868,15 @@ export class QmdMemoryManager implements MemorySearchManager {
       if (!requestedSources.has(doc.source)) {
         continue;
       }
-      if (opts?.domain) {
-        const domain = inferDomainFromPath(doc.rel);
-        if (domain && domain !== opts.domain) {
-          continue;
-        }
-        if (!domain && opts.domain === "user_memory" && !isUserMemoryPath(doc.rel)) {
-          continue;
-        }
+      if (
+        opts?.domain &&
+        !matchesResultDomain({
+          domain: opts.domain,
+          path: doc.rel,
+          source: doc.source,
+        })
+      ) {
+        continue;
       }
       results.push({
         path: doc.rel,

@@ -9,11 +9,14 @@ import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.j
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
+import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { createChannelReplyPipeline } from "../../plugin-sdk/channel-reply-pipeline.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { deriveSessionChatType } from "../../sessions/session-key-utils.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import {
@@ -121,6 +124,13 @@ type ChatSendDeliveryEntry = {
     accountId?: string;
     threadId?: string | number;
   };
+  origin?: {
+    provider?: string;
+    surface?: string;
+    chatType?: string;
+    from?: string;
+    to?: string;
+  };
   lastChannel?: string;
   lastTo?: string;
   lastAccountId?: string;
@@ -133,6 +143,14 @@ type ChatSendOriginatingRoute = {
   accountId?: string;
   messageThreadId?: string | number;
   explicitDeliverRoute: boolean;
+};
+
+type ChatSendActorContext = {
+  provider: string;
+  surface: string;
+  from: string;
+  to: string;
+  senderId: string;
 };
 
 type SideResultPayload = {
@@ -161,14 +179,25 @@ function resolveChatSendOriginatingRoute(params: {
     };
   }
 
+  const explicitDeliveryInfo = extractDeliveryInfo(params.sessionKey);
   const routeChannelCandidate = normalizeMessageChannel(
-    params.entry?.deliveryContext?.channel ?? params.entry?.lastChannel,
+    params.entry?.deliveryContext?.channel ??
+      params.entry?.lastChannel ??
+      explicitDeliveryInfo.deliveryContext?.channel,
   );
-  const routeToCandidate = params.entry?.deliveryContext?.to ?? params.entry?.lastTo;
+  const routeToCandidate =
+    params.entry?.deliveryContext?.to ??
+    params.entry?.lastTo ??
+    explicitDeliveryInfo.deliveryContext?.to;
   const routeAccountIdCandidate =
-    params.entry?.deliveryContext?.accountId ?? params.entry?.lastAccountId ?? undefined;
+    params.entry?.deliveryContext?.accountId ??
+    params.entry?.lastAccountId ??
+    explicitDeliveryInfo.deliveryContext?.accountId ??
+    undefined;
   const routeThreadIdCandidate =
-    params.entry?.deliveryContext?.threadId ?? params.entry?.lastThreadId;
+    params.entry?.deliveryContext?.threadId ??
+    params.entry?.lastThreadId ??
+    explicitDeliveryInfo.threadId;
   if (params.sessionKey.length > CHAT_SEND_SESSION_KEY_MAX_LENGTH) {
     return {
       originatingChannel: INTERNAL_MESSAGE_CHANNEL,
@@ -240,6 +269,128 @@ function resolveChatSendOriginatingRoute(params: {
     messageThreadId: routeThreadIdCandidate,
     explicitDeliverRoute: true,
   };
+}
+
+function resolveChatSendActorContext(params: {
+  clientScopes?: readonly string[];
+  hasConnectedClient?: boolean;
+  entry?: ChatSendDeliveryEntry;
+  sessionKey: string;
+}): ChatSendActorContext | undefined {
+  const isPrivilegedConnectedClient =
+    Array.isArray(params.clientScopes) && params.clientScopes.includes(ADMIN_SCOPE);
+  const isTrustedLocalRpc = params.hasConnectedClient === false;
+  if (!isPrivilegedConnectedClient && !isTrustedLocalRpc) {
+    return undefined;
+  }
+  const parsedSessionKey = parseAgentSessionKey(params.sessionKey);
+  const scoped = (parsedSessionKey?.rest ?? params.sessionKey).trim();
+  if (!scoped) {
+    return undefined;
+  }
+  const parts = scoped.split(":").filter(Boolean);
+  if (parts.length < 3) {
+    return undefined;
+  }
+
+  const channel = normalizeMessageChannel(parts[0]);
+  if (!channel) {
+    return undefined;
+  }
+
+  const explicitChatType = resolveExplicitSessionChatType(params.sessionKey);
+  if (!explicitChatType) {
+    return undefined;
+  }
+
+  let chatType = parts[1];
+  let peer = parts.slice(2).join(":");
+  if (!peer) {
+    chatType = parts[2] ?? "";
+    peer = parts.slice(3).join(":");
+  }
+  const allowStaleDirectGroupMetadata =
+    explicitChatType !== "direct" && (chatType === "direct" || chatType === "dm");
+  if (!allowStaleDirectGroupMetadata && chatType !== explicitChatType) {
+    return undefined;
+  }
+
+  const originProvider = normalizeMessageChannel(params.entry?.origin?.provider);
+  const originSurface = normalizeMessageChannel(params.entry?.origin?.surface);
+  const originChatType = normalizeChatType(params.entry?.origin?.chatType);
+  const originChatTypeMismatch =
+    originChatType &&
+    originChatType !== explicitChatType &&
+    !(explicitChatType !== "direct" && originChatType === "direct");
+  if (originChatTypeMismatch) {
+    return undefined;
+  }
+
+  const deliveryInfo = extractDeliveryInfo(params.sessionKey);
+  const rawTarget =
+    params.entry?.origin?.to ??
+    params.entry?.origin?.from ??
+    params.entry?.deliveryContext?.to ??
+    params.entry?.lastTo ??
+    deliveryInfo.deliveryContext?.to ??
+    peer;
+  const normalizedTarget = normalizeExternalActorRef(channel, rawTarget);
+  if (!normalizedTarget) {
+    return undefined;
+  }
+
+  const provider =
+    channel === INTERNAL_MESSAGE_CHANNEL
+      ? (originProvider ?? channel)
+      : originProvider && originProvider !== INTERNAL_MESSAGE_CHANNEL
+        ? originProvider
+        : channel;
+  const surface =
+    channel === INTERNAL_MESSAGE_CHANNEL
+      ? (originSurface ?? provider)
+      : originSurface && originSurface !== INTERNAL_MESSAGE_CHANNEL
+        ? originSurface
+        : provider;
+  const originFrom = normalizeExternalActorRef(provider, params.entry?.origin?.from);
+  const originTo = normalizeExternalActorRef(provider, params.entry?.origin?.to);
+  const senderRef =
+    explicitChatType === "direct" ? (originFrom ?? normalizedTarget) : (originFrom ?? undefined);
+  const senderId = extractExternalActorId(provider, senderRef);
+  if (!senderRef || !senderId) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    surface,
+    from: senderRef,
+    to: originTo ?? normalizedTarget,
+    senderId,
+  };
+}
+
+function resolveExplicitSessionChatType(
+  sessionKey: string,
+): "direct" | "group" | "channel" | undefined {
+  const derived = deriveSessionChatType(sessionKey);
+  return derived === "unknown" ? undefined : derived;
+}
+
+function normalizeExternalActorRef(channel: string, value: unknown): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.startsWith(`${channel}:`) ? trimmed : `${channel}:${trimmed}`;
+}
+
+function extractExternalActorId(channel: string, value: unknown): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) {
+    return undefined;
+  }
+  const prefix = `${channel}:`;
+  return trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
 }
 
 function stripDisallowedChatControlChars(message: string): string {
@@ -1308,10 +1459,27 @@ export const chatHandlers: GatewayRequestHandlers = {
         mainKey: cfg.session?.mainKey,
         sessionKey,
       });
+      const actorContext = resolveChatSendActorContext({
+        clientScopes: client?.connect?.scopes,
+        hasConnectedClient: client?.connect !== undefined,
+        entry,
+        sessionKey,
+      });
       // Inject timestamp so agents know the current date/time.
       // Only BodyForAgent gets the timestamp — Body stays raw for UI display.
       // See: https://github.com/moltbot/moltbot/issues/3658
       const stampedMessage = injectTimestamp(messageForAgent, timestampOptsFromConfig(cfg));
+      const derivedSessionChatType = resolveExplicitSessionChatType(sessionKey);
+      const storedSessionChatType = normalizeChatType(entry?.chatType);
+      const sessionChatType =
+        (derivedSessionChatType &&
+        derivedSessionChatType !== "direct" &&
+        storedSessionChatType !== derivedSessionChatType
+          ? derivedSessionChatType
+          : undefined) ??
+        storedSessionChatType ??
+        derivedSessionChatType ??
+        "direct";
 
       const ctx: MsgContext = {
         Body: messageForAgent,
@@ -1321,17 +1489,19 @@ export const chatHandlers: GatewayRequestHandlers = {
         CommandBody: commandBody,
         InputProvenance: systemInputProvenance,
         SessionKey: sessionKey,
-        Provider: INTERNAL_MESSAGE_CHANNEL,
-        Surface: INTERNAL_MESSAGE_CHANNEL,
+        Provider: actorContext?.provider ?? INTERNAL_MESSAGE_CHANNEL,
+        Surface: actorContext?.surface ?? INTERNAL_MESSAGE_CHANNEL,
+        From: actorContext?.from,
+        To: actorContext?.to,
         OriginatingChannel: originatingChannel,
         OriginatingTo: originatingTo,
         ExplicitDeliverRoute: explicitDeliverRoute,
         AccountId: accountId,
         MessageThreadId: messageThreadId,
-        ChatType: "direct",
+        ChatType: sessionChatType,
         CommandAuthorized: true,
         MessageSid: clientRunId,
-        SenderId: clientInfo?.id,
+        SenderId: actorContext?.senderId ?? clientInfo?.id,
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
@@ -1603,6 +1773,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       message: string;
       label?: string;
+      idempotencyKey?: string;
     };
 
     // Load session to find transcript file
@@ -1622,6 +1793,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionFile: entry?.sessionFile,
       agentId: resolveSessionAgentId({ sessionKey: rawSessionKey, config: cfg }),
       createIfMissing: true,
+      idempotencyKey: p.idempotencyKey,
     });
     if (!appended.ok || !appended.messageId || !appended.message) {
       respond(

@@ -83,6 +83,7 @@ export interface MemorySearchManager {
       sessionKey?: string;
       sources?: MemorySource[];
       domain?: MemoryDomain;
+      scope?: "global" | "session" | "prefer_session";
     },
   ): Promise<MemorySearchResult[]>;
   readFile(params: {

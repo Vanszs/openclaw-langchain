@@ -103,6 +103,9 @@ export type RunCronAgentTurnResult = {
 
 type ResolvedAgentConfig = NonNullable<ReturnType<typeof resolveAgentConfig>>;
 
+const EXACT_REMINDER_PROMPT_PREFIX =
+  "Kirim pengingat ini sekarang. Balas dengan tepat teks berikut dan jangan tambah apa pun:";
+
 function extractCronAgentDefaultsOverride(agentConfigOverride?: ResolvedAgentConfig) {
   const {
     model: overrideModel,
@@ -147,6 +150,18 @@ function buildCronAgentDefaultsConfig(params: {
     defaults: Object.assign({}, params.defaults, definedOverrides),
     overrideModel,
   });
+}
+
+function resolveExactReminderDeliveryText(job: CronJob): string | undefined {
+  if (job.payload.kind !== "agentTurn") {
+    return undefined;
+  }
+  const prompt = job.payload.message?.trim();
+  if (!prompt?.startsWith(EXACT_REMINDER_PROMPT_PREFIX)) {
+    return undefined;
+  }
+  const reminderText = prompt.slice(EXACT_REMINDER_PROMPT_PREFIX.length).trim();
+  return reminderText || undefined;
 }
 
 type ResolvedCronDeliveryTarget = Awaited<ReturnType<typeof resolveDeliveryTarget>>;
@@ -202,6 +217,8 @@ async function resolveCronDeliveryContext(params: {
     channel: deliveryPlan.channel ?? "last",
     to: deliveryPlan.to,
     accountId: deliveryPlan.accountId,
+    threadId: deliveryPlan.threadId,
+    replyToId: deliveryPlan.replyToId,
     sessionKey: params.job.sessionKey,
   });
   return {
@@ -465,6 +482,44 @@ export async function runCronIsolatedAgentTurn(params: {
     agentId,
     deliveryContract,
   });
+  const directReminderText = resolveExactReminderDeliveryText(params.job);
+  if (directReminderText) {
+    const deliveryResult = await dispatchCronDelivery({
+      cfg: params.cfg,
+      cfgWithAgentDefaults,
+      deps: params.deps,
+      job: params.job,
+      agentId,
+      agentSessionKey,
+      runSessionId,
+      runStartedAt: now,
+      runEndedAt: now,
+      timeoutMs,
+      resolvedDelivery,
+      deliveryRequested,
+      skipHeartbeatDelivery: false,
+      skipMessagingToolDelivery: false,
+      deliveryBestEffort: resolveCronDeliveryBestEffort(params.job),
+      deliveryPayloadHasStructuredContent: false,
+      deliveryPayloads: [{ text: directReminderText }],
+      synthesizedText: directReminderText,
+      summary: directReminderText,
+      outputText: directReminderText,
+      isAborted,
+      abortReason,
+      withRunSession,
+    });
+    if (deliveryResult.result) {
+      return deliveryResult.result;
+    }
+    return withRunSession({
+      status: "ok",
+      summary: directReminderText,
+      outputText: directReminderText,
+      delivered: deliveryResult.delivered,
+      deliveryAttempted: deliveryResult.deliveryAttempted,
+    });
+  }
 
   const { formattedTime, timeLine } = resolveCronStyleNow(params.cfg, now);
   const base = `[cron:${params.job.id} ${params.job.name}] ${params.message}`.trim();
@@ -829,7 +884,7 @@ export async function runCronIsolatedAgentTurn(params: {
       : synthesizedText
         ? [{ text: synthesizedText }]
         : [];
-  const deliveryPayloadHasStructuredContent =
+  let deliveryPayloadHasStructuredContent =
     (deliveryPayload ? resolveSendableOutboundReplyParts(deliveryPayload).hasMedia : false) ||
     Object.keys(deliveryPayload?.channelData ?? {}).length > 0;
   const deliveryBestEffort = resolveCronDeliveryBestEffort(params.job);
@@ -853,6 +908,16 @@ export async function runCronIsolatedAgentTurn(params: {
   const embeddedRunError = hasFatalErrorPayload
     ? (lastErrorPayloadText ?? "cron isolated run returned an error payload")
     : undefined;
+  const exactReminderText = !hasFatalErrorPayload
+    ? resolveExactReminderDeliveryText(params.job)
+    : undefined;
+  if (exactReminderText) {
+    summary = pickSummaryFromOutput(exactReminderText) ?? summary;
+    outputText = exactReminderText;
+    synthesizedText = exactReminderText;
+    deliveryPayloads = [{ text: exactReminderText }];
+    deliveryPayloadHasStructuredContent = false;
+  }
   const resolveRunOutcome = (params?: { delivered?: boolean; deliveryAttempted?: boolean }) =>
     withRunSession({
       status: hasFatalErrorPayload ? "error" : "ok",

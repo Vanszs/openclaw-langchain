@@ -16,6 +16,8 @@ export type CronDeliveryPlan = {
   to?: string;
   /** Explicit channel account id from the delivery config, if set. */
   accountId?: string;
+  threadId?: string | number;
+  replyToId?: string;
   source: "delivery" | "payload";
   requested: boolean;
 };
@@ -40,6 +42,14 @@ function normalizeTo(value: unknown): string | undefined {
 }
 
 function normalizeAccountId(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeReplyToId(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -75,6 +85,10 @@ export function resolveCronDeliveryPlan(job: CronJob): CronDeliveryPlan {
   const deliveryAccountId = normalizeAccountId(
     (delivery as { accountId?: unknown } | undefined)?.accountId,
   );
+  const deliveryThreadId = (delivery as { threadId?: unknown } | undefined)?.threadId;
+  const deliveryReplyToId = normalizeReplyToId(
+    (delivery as { replyToId?: unknown } | undefined)?.replyToId,
+  );
   if (hasDelivery) {
     const resolvedMode = mode ?? "announce";
     return {
@@ -82,6 +96,8 @@ export function resolveCronDeliveryPlan(job: CronJob): CronDeliveryPlan {
       channel: resolvedMode === "announce" ? channel : undefined,
       to,
       accountId: deliveryAccountId,
+      threadId: deliveryThreadId as string | number | undefined,
+      replyToId: deliveryReplyToId,
       source: "delivery",
       requested: resolvedMode === "announce",
     };

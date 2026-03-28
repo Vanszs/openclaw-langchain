@@ -35,6 +35,10 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthProfileOverride: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../agents/tools/gateway.js", () => ({
+  callGatewayTool: vi.fn(),
+}));
+
 vi.mock("../../agents/pi-embedded.js", () => ({
   abortEmbeddedPiRun: vi.fn().mockReturnValue(false),
   isEmbeddedPiRunActive: vi.fn().mockReturnValue(false),
@@ -143,6 +147,7 @@ vi.mock("./typing-mode.js", () => ({
   resolveTypingMode: vi.fn().mockReturnValue("off"),
 }));
 
+import { callGatewayTool } from "../../agents/tools/gateway.js";
 import { buildAttachmentRetrievalContextNote } from "../attachment-rag.js";
 import { buildDeterministicMemoryRecallContext } from "../memory-recall.js";
 import { maybeHandleDeterministicMemorySave } from "../memory-save.js";
@@ -237,6 +242,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(buildDeterministicSchedulingContext).mockReset();
     vi.mocked(resolvePendingSchedulingFollowup).mockReset();
     vi.mocked(maybeHandleDeterministicMemorySave).mockReset();
+    vi.mocked(callGatewayTool).mockReset();
     vi.mocked(drainFormattedSystemEvents).mockReset();
     vi.mocked(resolveTypingMode).mockReset();
     vi.mocked(runReplyAgent).mockResolvedValue({ text: "ok" });
@@ -246,6 +252,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(buildDeterministicSchedulingContext).mockResolvedValue(undefined);
     vi.mocked(resolvePendingSchedulingFollowup).mockResolvedValue(undefined);
     vi.mocked(maybeHandleDeterministicMemorySave).mockResolvedValue(undefined);
+    vi.mocked(callGatewayTool).mockResolvedValue(undefined);
     vi.mocked(drainFormattedSystemEvents).mockResolvedValue(undefined);
     vi.mocked(resolveTypingMode).mockReturnValue("off");
   });
@@ -462,6 +469,194 @@ describe("runPreparedReply media-only handling", () => {
       text: "Siap, saya akan mengingatkan kembali di chat ini dalam 1 menit.",
     });
     expect(vi.mocked(buildDeterministicSelfReplyContext)).not.toHaveBeenCalled();
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("executes deterministic cron list replies through cron.list instead of the generic model", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      resolvedSchedulingAction: {
+        kind: "cron.list",
+        params: { enabled: "enabled" },
+        rememberIfSingleResult: true,
+      },
+    });
+    vi.mocked(callGatewayTool).mockResolvedValueOnce({
+      total: 1,
+      jobs: [
+        {
+          id: "job-1",
+          name: "Reminder: deploy",
+          enabled: true,
+          schedule: {
+            kind: "cron",
+            expr: "0 7 * * *",
+          },
+          delivery: {
+            mode: "announce",
+            channel: "telegram",
+            to: "12345",
+          },
+        },
+      ],
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "list cron saya",
+          RawBody: "list cron saya",
+          CommandBody: "list cron saya",
+        },
+        sessionCtx: {
+          Body: "list cron saya",
+          BodyStripped: "list cron saya",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(vi.mocked(callGatewayTool)).toHaveBeenCalledWith(
+      "cron.list",
+      {},
+      { enabled: "enabled" },
+    );
+    expect(result).toEqual({
+      text: expect.stringContaining("Daftar job cron aktif:"),
+    });
+    expect((result as { text: string }).text).toContain("Reminder: deploy");
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("executes deterministic cron status replies through cron.status instead of the generic model", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      resolvedSchedulingAction: {
+        kind: "cron.status",
+        params: {},
+      },
+    });
+    vi.mocked(callGatewayTool).mockResolvedValueOnce({
+      enabled: true,
+      jobs: 2,
+      nextWakeAtMs: Date.parse("2026-03-26T10:00:00.000Z"),
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "status cron",
+          RawBody: "status cron",
+          CommandBody: "status cron",
+        },
+        sessionCtx: {
+          Body: "status cron",
+          BodyStripped: "status cron",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(vi.mocked(callGatewayTool)).toHaveBeenCalledWith("cron.status", {}, {});
+    expect(result).toEqual({
+      text: expect.stringContaining("Cron aktif. Total job: 2."),
+    });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("executes deterministic cron update replies instead of falling back to reminder creation", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Webhook job yang tadi sudah saya ganti.",
+      },
+      resolvedSchedulingAction: {
+        kind: "cron.update",
+        params: {
+          id: "job-1",
+          patch: {
+            delivery: {
+              mode: "webhook",
+              to: "https://example.com/hook2",
+            },
+          },
+        },
+        confirmationText: "Webhook job yang tadi sudah saya ganti.",
+        rememberJobId: "job-1",
+      },
+    });
+    vi.mocked(callGatewayTool).mockResolvedValueOnce({
+      id: "job-1",
+      name: "Reminder: deploy",
+      updatedAtMs: Date.now(),
+    });
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "ganti webhook job yang tadi ke https://example.com/hook2",
+          RawBody: "ganti webhook job yang tadi ke https://example.com/hook2",
+          CommandBody: "ganti webhook job yang tadi ke https://example.com/hook2",
+        },
+        sessionCtx: {
+          Body: "ganti webhook job yang tadi ke https://example.com/hook2",
+          BodyStripped: "ganti webhook job yang tadi ke https://example.com/hook2",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(vi.mocked(callGatewayTool)).toHaveBeenCalledWith(
+      "cron.update",
+      {},
+      {
+        id: "job-1",
+        patch: {
+          delivery: {
+            mode: "webhook",
+            to: "https://example.com/hook2",
+          },
+        },
+      },
+    );
+    expect(result).toEqual({
+      text: "Webhook job yang tadi sudah saya ganti.",
+    });
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("executes deterministic cron remove replies instead of falling back to reminder creation", async () => {
+    vi.mocked(buildDeterministicSchedulingContext).mockResolvedValueOnce({
+      directReply: {
+        text: "Job cron yang tadi sudah saya hapus.",
+      },
+      resolvedSchedulingAction: {
+        kind: "cron.remove",
+        params: {
+          id: "job-1",
+        },
+        confirmationText: "Job cron yang tadi sudah saya hapus.",
+        removedJobId: "job-1",
+      },
+    });
+    vi.mocked(callGatewayTool).mockResolvedValueOnce(undefined);
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "hapus job cron yang tadi",
+          RawBody: "hapus job cron yang tadi",
+          CommandBody: "hapus job cron yang tadi",
+        },
+        sessionCtx: {
+          Body: "hapus job cron yang tadi",
+          BodyStripped: "hapus job cron yang tadi",
+          Provider: "telegram",
+        },
+      }),
+    );
+
+    expect(vi.mocked(callGatewayTool)).toHaveBeenCalledWith("cron.remove", {}, { id: "job-1" });
+    expect(result).toEqual({
+      text: "Job cron yang tadi sudah saya hapus.",
+    });
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 

@@ -111,6 +111,7 @@ describe("memory search config", () => {
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.provider).toBe("auto");
     expect(resolved?.fallback).toBe("none");
+    expect(resolved?.query.scope).toBe("prefer_session");
   });
 
   it("merges defaults and overrides", () => {
@@ -152,10 +153,35 @@ describe("memory search config", () => {
     expect(resolved?.model).toBe("text-embedding-3-small");
     expect(resolved?.chunking.tokens).toBe(320);
     expect(resolved?.chunking.overlap).toBe(100);
+    expect(resolved?.query.scope).toBe("prefer_session");
     expect(resolved?.query.maxResults).toBe(8);
     expect(resolved?.query.minScore).toBe(0.2);
     expect(resolved?.store.vector.enabled).toBe(true);
     expect(resolved?.store.vector.extensionPath).toBe("/opt/sqlite-vec.dylib");
+  });
+
+  it("honors an explicit memory query scope override", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            query: { scope: "global" },
+          },
+        },
+        list: [
+          {
+            id: "main",
+            default: true,
+            memorySearch: {
+              query: { scope: "session" },
+            },
+          },
+        ],
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.query.scope).toBe("session");
   });
 
   it("merges extra memory paths from defaults and overrides", () => {
@@ -393,5 +419,40 @@ describe("memory search config", () => {
     });
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.sources).toContain("sessions");
+  });
+
+  it("normalizes docs and repo sources onto file-backed memory storage", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+            sources: ["docs", "repo"],
+          },
+        },
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+
+    expect(resolved?.sources).toEqual(["memory"]);
+  });
+
+  it("normalizes chat and email sources onto session storage when enabled", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+            sources: ["chat", "email"],
+            experimental: { sessionMemory: true },
+          },
+        },
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+
+    expect(resolved?.sources).toEqual(["sessions"]);
   });
 });
