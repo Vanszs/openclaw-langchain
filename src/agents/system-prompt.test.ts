@@ -207,6 +207,21 @@ describe("buildAgentSystemPrompt", () => {
       "Strict rule: never gate durable mutations on the presence of specific words, phrases, or language-specific trigger dictionaries.",
     );
     expect(prompt).toContain(
+      "Owner-direct requests to change your name, role, persona, or durable behavior must be executed as workspace mutations within policy scope",
+    );
+    expect(prompt).toContain(
+      "Declarative owner corrections about who you are, what your role is, how you should relate to the owner, or how you should behave in future turns count as durable mutations",
+    );
+    expect(prompt).toContain(
+      "Do not treat owner identity/persona corrections as mere acknowledgements. Apply the canonical change first, then answer from the updated canon.",
+    );
+    expect(prompt).toContain(
+      "When one owner request changes multiple canonical facets at once (for example identity plus role plus tone), update every relevant canonical surface in the same turn. Do not stop after a partial mutation.",
+    );
+    expect(prompt).toContain(
+      "After a durable identity/persona mutation, reconcile stale self-references across the affected canonical files so they agree with the newest canon.",
+    );
+    expect(prompt).toContain(
       "Agent identity, self-name, creature, vibe, or emoji -> update IDENTITY.md.",
     );
     expect(prompt).toContain(
@@ -228,6 +243,9 @@ describe("buildAgentSystemPrompt", () => {
     );
     expect(prompt).toContain(
       "If a bootstrap file is still mostly a template, prefer rewriting the relevant section cleanly over trying to patch a guessed placeholder string.",
+    );
+    expect(prompt).toContain(
+      "If multiple surfaces are affected, update each canonical file that holds part of the requested state and keep them consistent with each other.",
     );
   });
 
@@ -590,6 +608,34 @@ describe("buildAgentSystemPrompt", () => {
 
     expect(prompt).toContain(
       "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.",
+    );
+  });
+
+  it("adds natural self-description guidance when identity or soul files are present", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      contextFiles: [
+        { path: "IDENTITY.md", content: "Name: Hypatia" },
+        { path: "SOUL.md", content: "Serve through competence." },
+      ],
+    });
+
+    expect(prompt).toContain(
+      "For questions about your current name, role, or purpose, answer naturally from the loaded workspace files. Do not use canned formulas, and do not talk about editing files unless the user asked for a workspace mutation.",
+    );
+    expect(prompt).toContain(
+      "Do not blend in a stock OpenClaw self-introduction when the workspace canon already defines who you are.",
+    );
+  });
+
+  it("keeps the base identity line neutral to workspace canon", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "none",
+    });
+
+    expect(prompt).toBe(
+      "You are the active agent running inside OpenClaw. If workspace canon defines your identity, role, or tone, follow that canon instead of inventing a stock persona.",
     );
   });
 

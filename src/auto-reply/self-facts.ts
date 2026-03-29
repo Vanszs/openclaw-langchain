@@ -1,4 +1,3 @@
-import { loadAgentIdentityFromWorkspace } from "../agents/identity-file.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   resolveAgentModelFallbackValues,
@@ -26,25 +25,8 @@ const SELF_SEMANTIC_LEXICON = {
     "kamu sendiri",
   ],
   runtime_context: ["runtime", "instance", "environment", "server", "lingkungan"],
-  ask_identity: ["siapa", "who", "who are you"],
   ask_what: ["apa", "what", "mana"],
   ask_now: ["sekarang", "now"],
-  facet_name: ["name", "nama"],
-  facet_role: [
-    "tugas",
-    "task",
-    "job",
-    "role",
-    "peran",
-    "fungsi",
-    "duty",
-    "kerja",
-    "apa tugas",
-    "apa peran",
-    "kerja apa",
-    "fungsi utama",
-    "what do you do",
-  ],
   facet_gmail: ["gmail"],
   facet_calendar: ["calendar", "kalender", "gcal"],
   facet_webhook: ["webhook"],
@@ -118,7 +100,7 @@ type RuntimeOrchestraState = {
   imageFallbacks?: string[];
 };
 
-type SelfIntent = "identity" | "role" | "orchestra_status" | "orchestra_inventory" | "integration";
+type SelfIntent = "orchestra_status" | "orchestra_inventory" | "integration";
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -152,22 +134,6 @@ function formatModelLabel(modelRef: string | undefined): string | undefined {
 
 function tokenizeSelfSemantics(query: string): SemanticToken[] {
   return tokenizeSemanticText(query, SELF_SEMANTIC_LEXICON);
-}
-
-function hasIdentityIntent(tokens: SemanticToken[]): boolean {
-  return (
-    (hasSemanticConcept(tokens, "ask_identity") && hasSemanticConcept(tokens, "self_target")) ||
-    (hasSemanticConcept(tokens, "ask_what") &&
-      hasSemanticConcept(tokens, "facet_name") &&
-      hasSemanticConcept(tokens, "self_target"))
-  );
-}
-
-function hasRoleIntent(tokens: SemanticToken[]): boolean {
-  if (!hasSemanticConcept(tokens, "facet_role")) {
-    return false;
-  }
-  return hasSelfContext(tokens) || hasSemanticConcept(tokens, "ask_what");
 }
 
 function hasSelfContext(tokens: SemanticToken[]): boolean {
@@ -250,12 +216,6 @@ function detectSelfIntent(query: string): SelfIntent | undefined {
     return undefined;
   }
   const tokens = tokenizeSelfSemantics(query);
-  if (hasIdentityIntent(tokens)) {
-    return "identity";
-  }
-  if (hasRoleIntent(tokens)) {
-    return "role";
-  }
   const asksIntegrationCapability =
     hasSemanticConcept(tokens, "qualifier_status") &&
     (hasSemanticConcept(tokens, "facet_gmail") ||
@@ -282,20 +242,6 @@ function detectSelfIntent(query: string): SelfIntent | undefined {
     return "orchestra_inventory";
   }
   return "orchestra_status";
-}
-
-function buildIdentityReply(workspaceDir: string): ReplyPayload {
-  const identity = loadAgentIdentityFromWorkspace(workspaceDir);
-  const name = identity?.name?.trim();
-  return {
-    text: name ? `Saya ${name}.` : "Saya asisten Anda.",
-  };
-}
-
-function buildRoleReply(): ReplyPayload {
-  return {
-    text: "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
-  };
 }
 
 function buildOrchestraSummary(cfg: OpenClawConfig, runtime?: RuntimeOrchestraState): string {
@@ -413,22 +359,10 @@ export async function buildDeterministicSelfReplyContext(params: {
   if (!intent) {
     return undefined;
   }
-  if (intent === "identity") {
-    logVerbose("self-facts: matched identity intent");
-    return {
-      directReply: buildIdentityReply(params.workspaceDir),
-    };
-  }
   if (intent === "integration") {
     logVerbose("self-facts: matched integration capability intent");
     return {
       directReply: buildIntegrationCapabilityReply(params.cfg, query),
-    };
-  }
-  if (intent === "role") {
-    logVerbose("self-facts: matched role intent");
-    return {
-      directReply: buildRoleReply(),
     };
   }
   logVerbose(`self-facts: matched ${intent} intent`);

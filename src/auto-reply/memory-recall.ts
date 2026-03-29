@@ -324,13 +324,31 @@ function stripPatterns(value: string, patterns: RegExp[]): string {
 }
 
 function isLikelySaveMutation(query: string): boolean {
-  if (!SAVE_MUTATION_RE.test(query)) {
+  const normalized = normalizeWhitespace(query);
+  if (!SAVE_MUTATION_RE.test(normalized)) {
     return false;
   }
-  if (QUESTION_LEAD_RE.test(query) || /\b(should|perlukah)\b/i.test(query)) {
+  if (QUESTION_LEAD_RE.test(normalized) || /\b(should|perlukah)\b/i.test(normalized)) {
     return false;
   }
-  return SAVE_IMPERATIVE_RE.test(query);
+  if (SAVE_IMPERATIVE_RE.test(normalized)) {
+    return true;
+  }
+
+  // Treat trailing save clauses like "..., ingat itu" as mutation intent so they
+  // do not get hijacked by memory-recall routing.
+  const clauses = normalized
+    .split(/[,\n;]+/)
+    .map((entry) => normalizeWhitespace(entry))
+    .filter(Boolean);
+  if (clauses.length < 2) {
+    return false;
+  }
+  const trailingClause = clauses[clauses.length - 1];
+  if (SAVE_IMPERATIVE_RE.test(trailingClause)) {
+    return true;
+  }
+  return SAVE_MUTATION_RE.test(trailingClause) && trailingClause.split(/\s+/).length <= 3;
 }
 
 function isLikelyBackendStatusQuery(query: string): boolean {

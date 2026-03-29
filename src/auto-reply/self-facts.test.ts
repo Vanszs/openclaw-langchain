@@ -1,115 +1,100 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("../agents/identity-file.js", () => ({
-  loadAgentIdentityFromWorkspace: vi.fn(),
-}));
-
-import { loadAgentIdentityFromWorkspace } from "../agents/identity-file.js";
 import { buildDeterministicSelfReplyContext } from "./self-facts.js";
 
 describe("buildDeterministicSelfReplyContext", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
-  it("returns a concise identity reply from IDENTITY.md", async () => {
-    vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
-      name: "Hypatia",
-    });
-
+  it("lets direct identity questions fall through to the model-backed workspace context", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "siapa anda?",
     });
 
-    expect(result).toEqual({
-      directReply: {
-        text: "Saya Hypatia.",
-      },
-    });
+    expect(result).toBeUndefined();
   });
 
-  it("prefers workspace IDENTITY.md for deterministic self-identity replies", async () => {
-    vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
-      name: "Hypatia",
-    });
-
+  it("lets possessive name questions fall through instead of emitting a canned reply", async () => {
     const result = await buildDeterministicSelfReplyContext({
-      cfg: {
-        agents: {
-          defaults: {},
-          list: [{ id: "main", identity: { name: "OpenClaw" } }],
-        },
-      },
+      cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
-      agentId: "main",
-      query: "siapa anda?",
+      query: "siapa namamu?",
     });
 
-    expect(result?.directReply.text).toBe("Saya Hypatia.");
+    expect(result).toBeUndefined();
   });
 
-  it("handles broader identity phrasing", async () => {
-    vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
-      name: "Hypatia",
-    });
-
+  it("lets broader identity phrasing fall through to the main model", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "boleh tahu siapa anda?",
     });
 
-    expect(result?.directReply.text).toBe("Saya Hypatia.");
+    expect(result).toBeUndefined();
   });
 
-  it("answers task phrasing deterministically", async () => {
+  it("does not hijack owner-style role mutation directives", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "tugasmu adalah menjadi maid pribadiku",
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("lets role questions fall through so the model can answer from SOUL.md naturally", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "apa tugas anda?",
     });
 
-    expect(result?.directReply.text).toBe(
-      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
-    );
+    expect(result).toBeUndefined();
   });
 
-  it("handles alternate task wording without sentence-specific regexes", async () => {
+  it("lets alternate role phrasing fall through instead of using a canned task summary", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "tugas kamu apa?",
     });
 
-    expect(result?.directReply.text).toBe(
-      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
-    );
+    expect(result).toBeUndefined();
   });
 
-  it("keeps role replies canonical across broader paraphrases", async () => {
+  it("lets broader role paraphrases fall through to workspace-backed generation", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "apa peran anda di sini?",
     });
 
-    expect(result?.directReply.text).toBe(
-      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
-    );
+    expect(result).toBeUndefined();
   });
 
-  it("handles broader English role phrasing through the same semantic route", async () => {
+  it("lets English role phrasing fall through instead of hard-wiring a job description", async () => {
     const result = await buildDeterministicSelfReplyContext({
       cfg: { agents: { defaults: {} } },
       workspaceDir: "/tmp/workspace",
       query: "what do you do here?",
     });
 
-    expect(result?.directReply.text).toBe(
-      "Tugas saya adalah membantu Anda menyelesaikan pekerjaan dengan cepat dan aman: menjawab pertanyaan, menjalankan tindakan yang diperlukan di workspace ini, dan mengatur pengingat atau automasi saat dibutuhkan.",
-    );
+    expect(result).toBeUndefined();
+  });
+
+  it("lets combined identity and role questions fall through to the main model", async () => {
+    const result = await buildDeterministicSelfReplyContext({
+      cfg: { agents: { defaults: {} } },
+      workspaceDir: "/tmp/workspace",
+      query: "siapa kamu, apa tugasmu?",
+    });
+
+    expect(result).toBeUndefined();
   });
 
   it("returns a concise orchestra model summary from config", async () => {

@@ -99,6 +99,12 @@ function buildDurableWorkspaceSection(params: {
     "Never build or rely on a private keyword bank, regex trigger list, or exact-sentence matcher to decide whether a durable mutation should happen. Infer durable intent from the user's meaning, requested future behavior, and the canonical workspace surfaces already in context.",
     "Strict rule: never gate durable mutations on the presence of specific words, phrases, or language-specific trigger dictionaries. This applies across all languages.",
     "If the user intent is persistent/future-facing, treat it as durable even when wording is novel and does not match prior examples.",
+    "Declarative owner corrections about who you are, what your role is, how you should relate to the owner, or how you should behave in future turns count as durable mutations when they redefine future behavior, even if phrased as a reminder or statement instead of an imperative command.",
+    "Owner-direct requests to change your name, role, persona, or durable behavior must be executed as workspace mutations within policy scope; do not default to refusal-style advisory text.",
+    "Do not treat owner identity/persona corrections as mere acknowledgements. Apply the canonical change first, then answer from the updated canon.",
+    "Do not reject owner-directed persona changes just because existing files mention OpenClaw or runtime framework details. Preserve only the minimal operational context needed to function, while applying the requested persona/identity change.",
+    "When one owner request changes multiple canonical facets at once (for example identity plus role plus tone), update every relevant canonical surface in the same turn. Do not stop after a partial mutation.",
+    "After a durable identity/persona mutation, reconcile stale self-references across the affected canonical files so they agree with the newest canon.",
     "- Agent identity, self-name, creature, vibe, or emoji -> update IDENTITY.md.",
     "- Durable operating rules for this workspace/repo -> update AGENTS.md.",
     "- Assistant tone, persona, or behavioral style -> update SOUL.md. If the user is changing how replies should sound or feel, prefer SOUL.md over squeezing that instruction into IDENTITY metadata.",
@@ -117,6 +123,7 @@ function buildDurableWorkspaceSection(params: {
     "If a helper search/read attempt fails while you are making a durable workspace change, recover by reading the target file directly and finish the edit. Do not surface the raw tool failure as your final answer.",
     "If a bootstrap file is still mostly a template, prefer rewriting the relevant section cleanly over trying to patch a guessed placeholder string.",
     "If the requested change is durable, update the canonical surface before you answer. Do not only promise that the change will happen.",
+    "If multiple surfaces are affected, update each canonical file that holds part of the requested state and keep them consistent with each other.",
     "If multiple surfaces could fit, choose the most canonical one, make the edit, and mention what you changed.",
     "",
   ];
@@ -481,14 +488,16 @@ export function buildAgentSystemPrompt(params: {
     writeToolName,
   });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
+  const baseIdentityLine =
+    "You are the active agent running inside OpenClaw. If workspace canon defines your identity, role, or tone, follow that canon instead of inventing a stock persona.";
 
   // For "none" mode, return just the basic identity line
   if (promptMode === "none") {
-    return "You are a personal assistant running inside OpenClaw.";
+    return baseIdentityLine;
   }
 
   const lines = [
-    "You are a personal assistant running inside OpenClaw.",
+    baseIdentityLine,
     "",
     "## Tooling",
     "Tool availability (filtered by policy):",
@@ -694,10 +703,23 @@ export function buildAgentSystemPrompt(params: {
         const baseName = normalizedPath.split("/").pop() ?? normalizedPath;
         return baseName.toLowerCase() === "soul.md";
       });
+      const hasIdentityFile = validContextFiles.some((file) => {
+        const normalizedPath = file.path.trim().replace(/\\/g, "/");
+        const baseName = normalizedPath.split("/").pop() ?? normalizedPath;
+        return baseName.toLowerCase() === "identity.md";
+      });
       lines.push("The following project context files have been loaded:");
       if (hasSoulFile) {
         lines.push(
           "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.",
+        );
+      }
+      if (hasSoulFile || hasIdentityFile) {
+        lines.push(
+          "For questions about your current name, role, or purpose, answer naturally from the loaded workspace files. Do not use canned formulas, and do not talk about editing files unless the user asked for a workspace mutation.",
+        );
+        lines.push(
+          "Do not blend in a stock OpenClaw self-introduction when the workspace canon already defines who you are.",
         );
       }
       lines.push("");

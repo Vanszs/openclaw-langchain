@@ -6,7 +6,7 @@ export type SemanticToken = CueToken & {
   concepts: string[];
 };
 
-const DERIVED_SUFFIXES = ["nya", "lah", "kah", "pun"] as const;
+const DERIVED_SUFFIXES = ["nya", "lah", "kah", "pun", "mu", "ku"] as const;
 
 type SemanticAliasIndex = {
   tokenIndex: Map<string, string[]>;

@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../acp/policy.js";
@@ -90,6 +92,11 @@ import {
 } from "./model-selection.js";
 import { prepareSessionManagerForRun } from "./pi-embedded-runner/session-manager-init.js";
 import { runEmbeddedPiAgent } from "./pi-embedded.js";
+import {
+  buildSelfCanonRepairPrompt,
+  readSelfCanonSnapshot,
+  shouldRunSelfCanonRepair,
+} from "./self-canon-repair.js";
 import { buildWorkspaceSkillSnapshot } from "./skills.js";
 import { getSkillsSnapshotVersion } from "./skills/refresh.js";
 import { normalizeSpawnedRunMetadata } from "./spawned-context.js";
@@ -531,6 +538,60 @@ function runAgentAttempt(params: {
     bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature,
   });
+}
+
+async function runInternalSelfCanonRepair(params: {
+  beforeSnapshot: Awaited<ReturnType<typeof readSelfCanonSnapshot>>;
+  workspaceDir: string;
+  sessionAgentId: string;
+  cfg: ReturnType<typeof loadConfig>;
+  provider: string;
+  model: string;
+  thinkLevel: ThinkLevel;
+  timeoutMs: number;
+  agentDir: string;
+  senderIsOwner: boolean;
+  baseRunId: string;
+}) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-self-canon-repair-"));
+  const sessionFile = path.join(tempDir, "session.jsonl");
+  try {
+    let latestSnapshot = await readSelfCanonSnapshot(params.workspaceDir);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!shouldRunSelfCanonRepair(params.beforeSnapshot, latestSnapshot)) {
+        return;
+      }
+      await runEmbeddedPiAgent({
+        sessionId: `self-canon-repair-${Date.now()}-${attempt + 1}`,
+        agentId: params.sessionAgentId,
+        trigger: "user",
+        senderIsOwner: params.senderIsOwner,
+        sessionFile,
+        workspaceDir: params.workspaceDir,
+        agentDir: params.agentDir,
+        config: params.cfg,
+        prompt: "Continue the unfinished self-canon reconciliation.",
+        provider: params.provider,
+        model: params.model,
+        thinkLevel: params.thinkLevel,
+        timeoutMs: Math.min(params.timeoutMs, 60_000),
+        runId: `${params.baseRunId}-self-canon-repair-${attempt + 1}`,
+        disableMessageTool: true,
+        suppressToolErrorWarnings: true,
+        extraSystemPrompt: buildSelfCanonRepairPrompt({
+          before: params.beforeSnapshot,
+          after: latestSnapshot,
+        }),
+      });
+      latestSnapshot = await readSelfCanonSnapshot(params.workspaceDir);
+    }
+  } catch (error) {
+    log.warn(
+      `self-canon repair follow-up failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function prepareAgentCommandExecution(
@@ -1148,6 +1209,7 @@ async function agentCommandInternal(
 
     const startedAt = Date.now();
     let lifecycleEnded = false;
+    const selfCanonBefore = await readSelfCanonSnapshot(workspaceDir);
 
     let result: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
     let fallbackProvider = provider;
@@ -1222,6 +1284,19 @@ async function agentCommandInternal(
       result = fallbackResult.result;
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
+      await runInternalSelfCanonRepair({
+        beforeSnapshot: selfCanonBefore,
+        workspaceDir,
+        sessionAgentId,
+        cfg,
+        provider: fallbackProvider,
+        model: fallbackModel,
+        thinkLevel: resolvedThinkLevel,
+        timeoutMs,
+        agentDir,
+        senderIsOwner: opts.senderIsOwner,
+        baseRunId: runId,
+      });
       if (!lifecycleEnded) {
         const stopReason = result.meta.stopReason;
         if (stopReason && stopReason !== "end_turn") {

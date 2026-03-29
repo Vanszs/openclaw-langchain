@@ -104,6 +104,10 @@ describe("memory recall deterministic routing", () => {
     expect(
       shouldInjectDeterministicMemoryRecall("simpan informasi yang menurut anda penting di rag"),
     ).toBe(false);
+    expect(
+      shouldInjectDeterministicMemoryRecall("anda adalah pendamping pribadi saya, ingat itu"),
+    ).toBe(false);
+    expect(shouldInjectDeterministicMemoryRecall("kamu identitas baruku, ingat")).toBe(false);
     expect(shouldInjectDeterministicMemoryRecall("why is memory usage high?")).toBe(false);
     expect(shouldInjectDeterministicMemoryRecall("how do I create an index in sqlite?")).toBe(
       false,

@@ -21,6 +21,24 @@ describe("buildAgentSystemPrompt durable workspace guidance", () => {
       "If the user intent is persistent/future-facing, treat it as durable even when wording is novel",
     );
     expect(prompt).toContain(
+      "Declarative owner corrections about who you are, what your role is, how you should relate to the owner, or how you should behave in future turns count as durable mutations",
+    );
+    expect(prompt).toContain(
+      "Owner-direct requests to change your name, role, persona, or durable behavior must be executed as workspace mutations within policy scope",
+    );
+    expect(prompt).toContain(
+      "Do not treat owner identity/persona corrections as mere acknowledgements. Apply the canonical change first, then answer from the updated canon.",
+    );
+    expect(prompt).toContain(
+      "When one owner request changes multiple canonical facets at once (for example identity plus role plus tone), update every relevant canonical surface in the same turn. Do not stop after a partial mutation.",
+    );
+    expect(prompt).toContain(
+      "After a durable identity/persona mutation, reconcile stale self-references across the affected canonical files so they agree with the newest canon.",
+    );
+    expect(prompt).toContain(
+      "Do not reject owner-directed persona changes just because existing files mention OpenClaw or runtime framework details.",
+    );
+    expect(prompt).toContain(
       "Rules about how future edits, testing, review, safety, or workspace behavior should operate are core workspace rules and belong in AGENTS.md, not TOOLS.md.",
     );
     expect(prompt).toContain(
@@ -37,6 +55,9 @@ describe("buildAgentSystemPrompt durable workspace guidance", () => {
     );
     expect(prompt).toContain(
       "If a helper search/read attempt fails while you are making a durable workspace change, recover by reading the target file directly and finish the edit.",
+    );
+    expect(prompt).toContain(
+      "If multiple surfaces are affected, update each canonical file that holds part of the requested state and keep them consistent with each other.",
     );
   });
 });
