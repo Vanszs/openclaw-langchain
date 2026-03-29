@@ -54,6 +54,7 @@ function buildMemorySection(params: {
   }
   const lines = [
     "## Memory Recall",
+    "First decide whether the answer should come from injected workspace files or canonical stores already in context. Use retrieval only when the user is asking for stored memory, docs, or history that is not already present in the current workspace context.",
     "Use the retrieval tool that matches the domain of the question.",
     hasMemoryTools
       ? "- user_memory facts about the user, preferences, remembered profile, or what is stored about the user in memory/RAG/Chroma/the index: run memory_search, then memory_get."
@@ -79,6 +80,46 @@ function buildMemorySection(params: {
   }
   lines.push("");
   return lines;
+}
+
+function buildDurableWorkspaceSection(params: {
+  isMinimal: boolean;
+  readToolName: string;
+  editToolName: string;
+  writeToolName: string;
+}) {
+  if (params.isMinimal) {
+    return [];
+  }
+  return [
+    "## Durable Workspace Changes",
+    "When the user asks for a lasting change to who you are, how you should behave, or how this workspace should operate, treat it as a workspace mutation task rather than a one-off chat reply.",
+    "Choose the target surface by meaning, not by exact wording or memorized sentence templates.",
+    "Do not require any magic phrase such as 'from now on', 'mulai sekarang', or similar wording before treating a request as durable. Novel paraphrases with the same durable intent should be handled the same way.",
+    "Never build or rely on a private keyword bank, regex trigger list, or exact-sentence matcher to decide whether a durable mutation should happen. Infer durable intent from the user's meaning, requested future behavior, and the canonical workspace surfaces already in context.",
+    "Strict rule: never gate durable mutations on the presence of specific words, phrases, or language-specific trigger dictionaries. This applies across all languages.",
+    "If the user intent is persistent/future-facing, treat it as durable even when wording is novel and does not match prior examples.",
+    "- Agent identity, self-name, creature, vibe, or emoji -> update IDENTITY.md.",
+    "- Durable operating rules for this workspace/repo -> update AGENTS.md.",
+    "- Assistant tone, persona, or behavioral style -> update SOUL.md. If the user is changing how replies should sound or feel, prefer SOUL.md over squeezing that instruction into IDENTITY metadata.",
+    "- Owner profile or preferences -> update canonical owner memory first, and keep USER.md consistent when relevant.",
+    "- Heartbeat routines or tiny periodic checklists -> update HEARTBEAT.md.",
+    "- Bootstrap completion -> finish the ritual in BOOTSTRAP.md, then remove BOOTSTRAP.md when done.",
+    "- Local reusable workflows -> create or update skills/<name>/SKILL.md.",
+    "- Tool usage notes that are not core rules -> update TOOLS.md.",
+    "Rules about how future edits, testing, review, safety, or workspace behavior should operate are core workspace rules and belong in AGENTS.md, not TOOLS.md.",
+    "Use TOOLS.md only for local environment notes, hostnames, device names, SSH aliases, voice preferences, or other setup-specific reference data.",
+    "When the user is asking you to add, store, change, or remove a durable rule/persona/identity instruction, do the workspace edit itself. Do not switch into advisory mode with example YAML, example scripts, or generic recommendations unless the user explicitly asked for a design instead of a mutation.",
+    `Required workflow: first use \`${params.readToolName}\` on the target file, then draft the change from the actual contents instead of guessing template lines from memory.`,
+    `For short canonical markdown files such as \`IDENTITY.md\`, \`SOUL.md\`, \`HEARTBEAT.md\`, and \`BOOTSTRAP.md\`, default to \`${params.writeToolName}\` after \`${params.readToolName}\` unless you are editing text you just read from that exact file.`,
+    `If the target is a short template-like markdown file or the change touches multiple placeholders, prefer \`${params.writeToolName}\` to rewrite the file cleanly over brittle exact-string patching.`,
+    `If a \`${params.editToolName}\` call fails because text did not match, immediately use \`${params.readToolName}\` on that same path before retrying. Do not invent \`old_string\` from memory.`,
+    "If a helper search/read attempt fails while you are making a durable workspace change, recover by reading the target file directly and finish the edit. Do not surface the raw tool failure as your final answer.",
+    "If a bootstrap file is still mostly a template, prefer rewriting the relevant section cleanly over trying to patch a guessed placeholder string.",
+    "If the requested change is durable, update the canonical surface before you answer. Do not only promise that the change will happen.",
+    "If multiple surfaces could fit, choose the most canonical one, make the edit, and mention what you changed.",
+    "",
+  ];
 }
 
 function buildUserIdentitySection(ownerLine: string | undefined, isMinimal: boolean) {
@@ -359,6 +400,8 @@ export function buildAgentSystemPrompt(params: {
 
   const hasGateway = availableTools.has("gateway");
   const readToolName = resolveToolName("read");
+  const writeToolName = resolveToolName("write");
+  const editToolName = resolveToolName("edit");
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
   const extraSystemPrompt = params.extraSystemPrompt?.trim();
@@ -431,6 +474,12 @@ export function buildAgentSystemPrompt(params: {
     isMinimal,
     readToolName,
   });
+  const durableWorkspaceSection = buildDurableWorkspaceSection({
+    isMinimal,
+    readToolName,
+    editToolName,
+    writeToolName,
+  });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
   // For "none" mode, return just the basic identity line
@@ -499,6 +548,7 @@ export function buildAgentSystemPrompt(params: {
     "",
     ...skillsSection,
     ...memorySection,
+    ...durableWorkspaceSection,
     // Skip self-update for subagent/none modes
     hasGateway && !isMinimal ? "## OpenClaw Self-Update" : "",
     hasGateway && !isMinimal

@@ -188,11 +188,47 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("user_memory facts about the user");
     expect(prompt).toContain("docs_kb and saved external knowledge");
     expect(prompt).toContain("history about what was said earlier");
-    expect(prompt).toContain("Do not guess what the memory backend contains");
+    expect(prompt).toContain("Do not guess what the retrieval backend contains");
     expect(prompt).toContain(
       "Do not use exec/read/grep/glob/web_search as a substitute for memory_search, knowledge_search, or history_search.",
     );
     expect(prompt).toContain("Do not claim you inspected Chroma or the index");
+  });
+
+  it("guides durable workspace mutations through canonical workspace surfaces", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["memory_search", "memory_get", "knowledge_search", "history_search"],
+    });
+
+    expect(prompt).toContain("## Durable Workspace Changes");
+    expect(prompt).toContain("Choose the target surface by meaning, not by exact wording");
+    expect(prompt).toContain(
+      "Strict rule: never gate durable mutations on the presence of specific words, phrases, or language-specific trigger dictionaries.",
+    );
+    expect(prompt).toContain(
+      "Agent identity, self-name, creature, vibe, or emoji -> update IDENTITY.md.",
+    );
+    expect(prompt).toContain(
+      "Durable operating rules for this workspace/repo -> update AGENTS.md.",
+    );
+    expect(prompt).toContain("Assistant tone, persona, or behavioral style -> update SOUL.md.");
+    expect(prompt).toContain("Owner profile or preferences -> update canonical owner memory first");
+    expect(prompt).toContain(
+      "Bootstrap completion -> finish the ritual in BOOTSTRAP.md, then remove BOOTSTRAP.md when done.",
+    );
+    expect(prompt).toContain(
+      "Required workflow: first use `read` on the target file, then draft the change from the actual contents instead of guessing template lines from memory.",
+    );
+    expect(prompt).toContain(
+      "If the target is a short template-like markdown file or the change touches multiple placeholders, prefer `write` to rewrite the file cleanly over brittle exact-string patching.",
+    );
+    expect(prompt).toContain(
+      "If a `edit` call fails because text did not match, immediately use `read` on that same path before retrying. Do not invent `old_string` from memory.",
+    );
+    expect(prompt).toContain(
+      "If a bootstrap file is still mostly a template, prefer rewriting the relevant section cleanly over trying to patch a guessed placeholder string.",
+    );
   });
 
   it("includes voice hint when provided", () => {

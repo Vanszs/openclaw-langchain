@@ -1,5 +1,4 @@
 import { loadAgentIdentityFromWorkspace } from "../agents/identity-file.js";
-import { resolveIdentityName } from "../agents/identity.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   resolveAgentModelFallbackValues,
@@ -416,15 +415,8 @@ export async function buildDeterministicSelfReplyContext(params: {
   }
   if (intent === "identity") {
     logVerbose("self-facts: matched identity intent");
-    const configuredIdentityName = params.agentId
-      ? resolveIdentityName(params.cfg, params.agentId)
-      : undefined;
     return {
-      directReply: configuredIdentityName
-        ? {
-            text: `Saya ${configuredIdentityName}.`,
-          }
-        : buildIdentityReply(params.workspaceDir),
+      directReply: buildIdentityReply(params.workspaceDir),
     };
   }
   if (intent === "integration") {

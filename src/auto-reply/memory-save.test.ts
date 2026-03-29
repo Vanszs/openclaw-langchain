@@ -192,6 +192,27 @@ describe("maybeHandleDeterministicMemorySave", () => {
     expect(facts[0]?.record.value).toBe("Bevan Satria");
   });
 
+  it("syncs active owner facts into USER.md after canonical writes", async () => {
+    const workspaceDir = await createWorkspace();
+
+    await maybeHandleDeterministicMemorySave({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+        Provider: "telegram",
+        ChatType: "direct",
+        SenderId: "123",
+      },
+      cfg: ownerCfg,
+      query: "nama saya adalah Bevan Satria",
+      workspaceDir,
+    });
+
+    const userFile = await fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8");
+    expect(userFile).toContain("## Canonical Owner Profile");
+    expect(userFile).toContain("<!-- openclaw:canonical-owner:start -->");
+    expect(userFile).toContain("- profile.name.full: Bevan Satria");
+  });
+
   it.each(["nama saya adalah Bevan Satria", "saya bernama Bevan Satria"])(
     "stores full name from broader phrasing: %s",
     async (query) => {

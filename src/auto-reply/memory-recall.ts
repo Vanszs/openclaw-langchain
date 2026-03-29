@@ -22,6 +22,11 @@ import {
   type UserMemoryFactRecord,
 } from "../memory/user-memory-store.js";
 import { resolveCommandAuthorization } from "./command-auth.js";
+import {
+  hasSemanticConcept,
+  tokenizeSemanticText,
+  type SemanticToken,
+} from "./semantic-concepts.js";
 import type { MsgContext } from "./templating.js";
 import type { ReplyPayload } from "./types.js";
 
@@ -78,9 +83,236 @@ type RetrievalIntent = {
 
 const BACKEND_STATUS_QUERY_RE =
   /(?:\b(?:cek|check|status|probe|ping|apakah|is)\b.*\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b)|(?:\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b.*\b(?:cek|check|status|aktif|online|up|reachable|health|working|jalan|running|tersedia|connected|terhubung|accessible|akses)\b)|(?:\b(?:is|apakah)\s+memory\s+(?:working|ready|up|available|aktif|jalan|tersedia)\b)|(?:\b(?:bisa|can|could|dapat|able|apakah)\b.*\b(?:akses|access|query|reach|terhubung|connect(?:ed)?)\b.*\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b)|(?:\b(?:chroma(?:\s*db)?|rag|vector(?:\s*db|\s*store)?|memory\s+backend|memory\s+store)\b.*\b(?:bisa|can|could|dapat|accessible|reachable|terhubung)\b)/i;
+const RETRIEVAL_SEMANTIC_LEXICON = {
+  ask_question: ["apa", "what", "siapa", "who", "mana", "which", "bagaimana", "how"],
+  search_action: ["cari", "search", "find", "lihat", "show", "tampilkan", "carikan", "recall"],
+  backend_subject: [
+    "rag",
+    "chroma",
+    "chroma db",
+    "vector",
+    "vector db",
+    "vector store",
+    "memory backend",
+    "memory store",
+  ],
+  backend_status: [
+    "cek",
+    "check",
+    "status",
+    "probe",
+    "ping",
+    "aktif",
+    "online",
+    "ready",
+    "working",
+    "jalan",
+    "running",
+    "tersedia",
+    "available",
+    "reachable",
+    "accessible",
+    "terhubung",
+    "access",
+    "akses",
+    "health",
+  ],
+  inventory: [
+    "ada apa saja",
+    "apa isi",
+    "what is in",
+    "what do you have",
+    "inventory",
+    "daftar",
+    "list",
+    "contents",
+  ],
+  history_subject: ["history", "transcript", "percakapan", "conversation", "chat", "obrolan"],
+  history_time: [
+    "kemarin",
+    "tadi",
+    "minggu lalu",
+    "earlier",
+    "last conversation",
+    "percakapan terakhir",
+  ],
+  docs_subject: [
+    "docs",
+    "documentation",
+    "manual",
+    "reference",
+    "repo",
+    "gateway token",
+    "openclaw docs",
+    "research",
+    "riset",
+    "knowledge",
+    "dokumen",
+    "document",
+  ],
+  self_subject: [
+    "saya",
+    "aku",
+    "gue",
+    "gw",
+    "me",
+    "my",
+    "about me",
+    "tentang saya",
+    "tentang aku",
+    "tentang gue",
+    "tentang gw",
+  ],
+  owner_memory_subject: [
+    "memory",
+    "memori",
+    "remember",
+    "ingat",
+    "rag",
+    "chroma",
+    "vector",
+    "profile",
+    "profil",
+  ],
+  owner_identity_query: ["who am i", "siapa saya"],
+  owner_preferences_query: [
+    "what are my preferences",
+    "apa preferensi saya",
+    "preferensi saya",
+    "my preferences",
+  ],
+  owner_profile_query: [
+    "what do you know about me",
+    "apa yang anda tahu tentang saya",
+    "apa yang kamu tahu tentang saya",
+    "apa yang anda ingat tentang saya",
+    "apa yang kamu ingat tentang saya",
+  ],
+  preference_field: [
+    "preferensi",
+    "preferences",
+    "editor",
+    "database",
+    "framework",
+    "allergy",
+    "alergi",
+    "nama",
+    "name",
+  ],
+} satisfies Record<string, readonly string[]>;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeRetrievalQuery(value: string): string {
+  return normalizeWhitespace(
+    value
+      .toLowerCase()
+      .replace(/[?!.,;:()[\]{}"']/g, " ")
+      .replace(/\bwhat's\b/g, "what is")
+      .replace(/\bconversation history\b/g, "history")
+      .replace(/\bdocs openclaw\b/g, "openclaw docs"),
+  );
+}
+
+function tokenizeRetrievalSemantics(query: string): SemanticToken[] {
+  return tokenizeSemanticText(normalizeRetrievalQuery(query), RETRIEVAL_SEMANTIC_LEXICON);
+}
+
+function hasQuestionOrSearch(tokens: SemanticToken[]): boolean {
+  return (
+    hasSemanticConcept(tokens, "ask_question") ||
+    hasSemanticConcept(tokens, "search_action") ||
+    hasSemanticConcept(tokens, "backend_status") ||
+    hasSemanticConcept(tokens, "inventory")
+  );
+}
+
+function isSemanticBackendStatusQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return (
+    hasSemanticConcept(tokens, "backend_subject") && hasSemanticConcept(tokens, "backend_status")
+  );
+}
+
+function isSemanticInventoryQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return (
+    hasSemanticConcept(tokens, "backend_subject") &&
+    hasSemanticConcept(tokens, "inventory") &&
+    !hasSemanticConcept(tokens, "self_subject") &&
+    !hasSemanticConcept(tokens, "docs_subject") &&
+    !hasSemanticConcept(tokens, "history_subject")
+  );
+}
+
+function isSemanticHistoryQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return (
+    (hasSemanticConcept(tokens, "history_subject") || hasSemanticConcept(tokens, "history_time")) &&
+    hasQuestionOrSearch(tokens)
+  );
+}
+
+function isSemanticKnowledgeQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return hasSemanticConcept(tokens, "docs_subject") && hasQuestionOrSearch(tokens);
+}
+
+function isSemanticUserMemoryQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  if (
+    hasSemanticConcept(tokens, "owner_identity_query") ||
+    hasSemanticConcept(tokens, "owner_preferences_query") ||
+    hasSemanticConcept(tokens, "owner_profile_query")
+  ) {
+    return true;
+  }
+  return (
+    hasSemanticConcept(tokens, "self_subject") &&
+    (hasSemanticConcept(tokens, "owner_memory_subject") ||
+      hasSemanticConcept(tokens, "preference_field")) &&
+    hasQuestionOrSearch(tokens)
+  );
+}
+
+function isDirectOwnerProfileQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  const semanticOwnerFactQuery =
+    hasSemanticConcept(tokens, "self_subject") &&
+    (hasSemanticConcept(tokens, "owner_memory_subject") ||
+      hasSemanticConcept(tokens, "preference_field")) &&
+    hasQuestionOrSearch(tokens) &&
+    !isSemanticBackendStatusQuery(query) &&
+    !isSemanticInventoryQuery(query) &&
+    !hasSemanticConcept(tokens, "docs_subject") &&
+    !hasSemanticConcept(tokens, "history_subject");
+  return (
+    hasSemanticConcept(tokens, "owner_identity_query") ||
+    hasSemanticConcept(tokens, "owner_preferences_query") ||
+    hasSemanticConcept(tokens, "owner_profile_query") ||
+    semanticOwnerFactQuery ||
+    USER_MEMORY_DIRECT_RE.test(query)
+  );
+}
+
+function isOwnerIdentityQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return (
+    hasSemanticConcept(tokens, "owner_identity_query") ||
+    /\b(?:siapa\s+saya|who\s+am\s+i)\b/i.test(query)
+  );
+}
+
+function isOwnerPreferencesQuery(query: string): boolean {
+  const tokens = tokenizeRetrievalSemantics(query);
+  return (
+    hasSemanticConcept(tokens, "owner_preferences_query") ||
+    (hasSemanticConcept(tokens, "self_subject") &&
+      hasSemanticConcept(tokens, "preference_field")) ||
+    /\bpreferensi\b|\bpreferences?\b/i.test(query)
+  );
 }
 
 function stripPatterns(value: string, patterns: RegExp[]): string {
@@ -102,22 +334,28 @@ function isLikelySaveMutation(query: string): boolean {
 }
 
 function isLikelyBackendStatusQuery(query: string): boolean {
-  return !USER_MEMORY_NEGATIVE_RE.test(query) && BACKEND_STATUS_QUERY_RE.test(query);
+  return (
+    !USER_MEMORY_NEGATIVE_RE.test(query) &&
+    (isSemanticBackendStatusQuery(query) || BACKEND_STATUS_QUERY_RE.test(query))
+  );
 }
 
 function isLikelyHistoryQuery(query: string): boolean {
-  return !HISTORY_NEGATIVE_RE.test(query) && HISTORY_QUERY_RE.test(query);
+  return (
+    !HISTORY_NEGATIVE_RE.test(query) &&
+    (isSemanticHistoryQuery(query) || HISTORY_QUERY_RE.test(query))
+  );
 }
 
 function isLikelyKnowledgeQuery(query: string): boolean {
-  return KNOWLEDGE_QUERY_RE.test(query);
+  return isSemanticKnowledgeQuery(query) || KNOWLEDGE_QUERY_RE.test(query);
 }
 
 function isLikelyUserMemoryQuery(query: string): boolean {
   if (USER_MEMORY_NEGATIVE_RE.test(query)) {
     return false;
   }
-  if (USER_MEMORY_DIRECT_RE.test(query)) {
+  if (isSemanticUserMemoryQuery(query) || USER_MEMORY_DIRECT_RE.test(query)) {
     return true;
   }
   return USER_MEMORY_KEYWORD_RE.test(query) && USER_MEMORY_SELF_RE.test(query);
@@ -128,7 +366,7 @@ function isLikelyGenericRagInventoryQuery(query: string): boolean {
     return false;
   }
   return (
-    GENERIC_RAG_INVENTORY_RE.test(query) &&
+    (isSemanticInventoryQuery(query) || GENERIC_RAG_INVENTORY_RE.test(query)) &&
     !USER_MEMORY_SELF_RE.test(query) &&
     !isLikelyKnowledgeQuery(query) &&
     !isLikelyHistoryQuery(query)
@@ -540,9 +778,8 @@ function buildOwnerProfileDirectReply(params: {
     (fact) => fact.namespace === "profile" && fact.key === "name.full",
   );
   const preferenceFacts = params.facts.filter((fact) => fact.namespace === "preferences");
-  const lower = params.query.toLowerCase();
 
-  if (/\b(?:siapa\s+saya|who\s+am\s+i)\b/i.test(lower)) {
+  if (isOwnerIdentityQuery(params.query)) {
     return {
       text: nameFact
         ? `Nama yang saya simpan untuk owner profile ini adalah ${nameFact.value}.`
@@ -550,7 +787,7 @@ function buildOwnerProfileDirectReply(params: {
     };
   }
 
-  if (/\bpreferensi\b|\bpreferences?\b/i.test(lower)) {
+  if (isOwnerPreferencesQuery(params.query)) {
     if (preferenceFacts.length === 0) {
       return {
         text: "Saya belum punya preferensi owner yang tersimpan di profile canonical ini.",
@@ -674,7 +911,7 @@ export async function buildDeterministicMemoryRecallContext(params: {
     }
   }
 
-  if (intent.domain === "user_memory" && USER_MEMORY_DIRECT_RE.test(params.query)) {
+  if (intent.domain === "user_memory" && isDirectOwnerProfileQuery(params.query)) {
     if (params.workspaceDir) {
       const facts = await listActiveUserMemoryFacts(params.workspaceDir, {
         namespaces: ["profile", "preferences", "reference"],

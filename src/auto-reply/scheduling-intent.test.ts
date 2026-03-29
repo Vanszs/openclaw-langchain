@@ -863,6 +863,30 @@ describe("buildDeterministicSchedulingContext", () => {
     });
   });
 
+  it("does not misroute owner preference updates into cron mutation handling", async () => {
+    const result = await buildDeterministicSchedulingContext({
+      cfg: { cron: { enabled: true } },
+      ctx: {
+        OriginatingChannel: "webchat",
+        OriginatingTo: "agent:main:webchat:direct:cli",
+        SessionKey: "agent:main:webchat:direct:cli",
+      },
+      query: "ubah framework favorit saya ke Svelte",
+      sessionEntry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+      },
+      runtimeOps: {
+        listCronJobs: vi.fn().mockResolvedValue({
+          total: 0,
+          jobs: [],
+        }),
+      },
+    });
+
+    expect(result).toBeUndefined();
+  });
+
   it("builds recurring automation with separate action and notify targets", async () => {
     const result = await buildDeterministicSchedulingContext({
       cfg: { cron: { enabled: true } },

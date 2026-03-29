@@ -2124,6 +2124,20 @@ function extractExplicitNamedChannelTarget(params: {
 
 function looksLikeCronUpdateQuery(query: string): boolean {
   const tokens = tokenizeSchedulingSemantics(normalizeSchedulingQuery(query));
+  const schedule = parseReminderSchedule(query);
+  const hasSchedulingContext =
+    hasCronSurface(tokens) ||
+    hasDirectReferenceCue(tokens) ||
+    hasReminderActionCue(tokens) ||
+    hasMonitoringSubjectCue(tokens) ||
+    hasWebhookDeliveryCue(tokens) ||
+    hasSameChatDeliveryCue(tokens) ||
+    hasInternalDeliveryCue(tokens) ||
+    extractUrls(query).length > 0 ||
+    schedule.mode !== "unresolved";
+  if (!hasSchedulingContext) {
+    return false;
+  }
   const updateIndexes = tokens.flatMap((token, index) =>
     token.concepts.includes("update_action") ? [index] : [],
   );

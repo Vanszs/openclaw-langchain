@@ -25,6 +25,7 @@ import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
+import { resolveCommandAuthorization } from "../command-auth.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { buildInboundMediaNote } from "../media-note.js";
@@ -48,6 +49,7 @@ import type { InlineDirectives } from "./directive-handling.js";
 import { buildGroupChatContext, buildGroupIntro } from "./groups.js";
 import { buildInboundMetaSystemPrompt, buildInboundUserContextPrefix } from "./inbound-meta.js";
 import type { createModelSelectionState } from "./model-selection.js";
+import { buildDurableMutationAuthSystemPrompt } from "./mutation-auth-prompt.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveQueueSettings } from "./queue.js";
 import { routeReply } from "./route-reply.js";
@@ -759,6 +761,14 @@ export async function runPreparedReply(
     groupChatContext,
     groupIntro,
     groupSystemPrompt,
+    buildDurableMutationAuthSystemPrompt({
+      chatType: ctx.ChatType ?? sessionCtx.ChatType,
+      senderIsOwnerExplicit: resolveCommandAuthorization({
+        ctx,
+        cfg,
+        commandAuthorized,
+      }).senderIsOwnerExplicit,
+    }),
     retrievalContext?.systemPromptHint,
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";

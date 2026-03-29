@@ -63,6 +63,7 @@ vi.mock("../../process/command-queue.js", () => ({
 }));
 
 vi.mock("../../routing/session-key.js", () => ({
+  DEFAULT_ACCOUNT_ID: "default",
   normalizeMainKey: vi.fn().mockReturnValue("main"),
   parseAgentSessionKey: vi.fn().mockReturnValue(null),
 }));

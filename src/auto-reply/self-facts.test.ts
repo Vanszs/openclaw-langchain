@@ -30,7 +30,7 @@ describe("buildDeterministicSelfReplyContext", () => {
     });
   });
 
-  it("prefers configured runtime identity over IDENTITY.md when available", async () => {
+  it("prefers workspace IDENTITY.md for deterministic self-identity replies", async () => {
     vi.mocked(loadAgentIdentityFromWorkspace).mockReturnValue({
       name: "Hypatia",
     });
@@ -47,7 +47,7 @@ describe("buildDeterministicSelfReplyContext", () => {
       query: "siapa anda?",
     });
 
-    expect(result?.directReply.text).toBe("Saya OpenClaw.");
+    expect(result?.directReply.text).toBe("Saya Hypatia.");
   });
 
   it("handles broader identity phrasing", async () => {

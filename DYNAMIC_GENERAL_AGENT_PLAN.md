@@ -862,30 +862,56 @@ Hal-hal ini bukan target v1 untuk plan ini:
 
 ## Dynamic Behavior Checklist
 
-- [ ] assistant identity mutation tidak bergantung pada exact phrase
-- [ ] assistant operating-rules mutation tidak bergantung pada exact phrase
-- [ ] owner profile mutation tidak bergantung pada exact phrase
-- [ ] persona/soul mutation tidak bergantung pada exact phrase
-- [ ] heartbeat mutation tidak bergantung pada exact phrase
-- [ ] bootstrap lifecycle mutation tidak bergantung pada exact phrase
-- [ ] curated memory write/update tidak bergantung pada exact phrase untuk cluster utama yang didukung
-- [ ] workspace-local skill mutation, jika dipilih, tidak bergantung pada exact phrase
-- [ ] self/runtime answers tetap canonical walau mutation path lebih dinamis
-- [ ] cron/reminder tetap memakai eksekusi terstruktur, tetapi intent parsing tidak phrase-hardcoded
-- [ ] route fidelity `same_chat` / thread/topic / configured_channel tetap terjaga
-- [ ] cron natural list/update/remove/follow-up tetap tersedia
-- [ ] `actionTarget` / `notifyTarget` tetap terpisah jelas
-- [ ] parser tetap menjaga URL / ISO / natural-time / recurring-reminder behavior yang sudah locked
-- [ ] owner direct/group auth, cross-channel merge, provenance-audit-only, dan sender-hint independence tetap terjaga
-- [ ] domain `docs_kb` / `history` / `memory` tetap dibedakan secara jujur
-- [ ] agent memahami mana yang injected-in-context vs mana yang perlu retrieval on-demand
-- [ ] agent memilih domain recall yang tepat (`user_memory`, `docs_kb`, `history`) tanpa keyword-hardcode sebagai fondasi utama
-- [ ] agent menghindari RAG yang tidak perlu bila jawaban sudah tersedia di canonical store atau injected context
-- [ ] private/LAN SSRF policy tetap safe-by-default
-- [ ] primary store dan mirror file tidak drift
-- [ ] `memory-langchain` tetap sinkron setelah mutation
-- [ ] auth policy jelas untuk siapa yang boleh mengubah identity/profile
-- [ ] live runtime proof tersedia, bukan hanya unit test
+- [x] assistant identity mutation tidak bergantung pada exact phrase
+- [x] assistant operating-rules mutation tidak bergantung pada exact phrase
+- [x] owner profile mutation tidak bergantung pada exact phrase
+- [x] persona/soul mutation tidak bergantung pada exact phrase
+- [x] heartbeat mutation tidak bergantung pada exact phrase
+- [x] bootstrap lifecycle mutation tidak bergantung pada exact phrase
+- [x] curated memory write/update tidak bergantung pada exact phrase untuk cluster utama yang didukung
+- [x] workspace-local skill mutation, jika dipilih, tidak bergantung pada exact phrase
+- [x] self/runtime answers tetap canonical walau mutation path lebih dinamis
+- [x] cron/reminder tetap memakai eksekusi terstruktur, tetapi intent parsing tidak phrase-hardcoded
+- [x] route fidelity `same_chat` / thread/topic / configured_channel tetap terjaga
+- [x] cron natural list/update/remove/follow-up tetap tersedia
+- [x] `actionTarget` / `notifyTarget` tetap terpisah jelas
+- [x] parser tetap menjaga URL / ISO / natural-time / recurring-reminder behavior yang sudah locked
+- [x] owner direct/group auth, cross-channel merge, provenance-audit-only, dan sender-hint independence tetap terjaga
+- [x] domain `docs_kb` / `history` / `memory` tetap dibedakan secara jujur
+- [x] agent memahami mana yang injected-in-context vs mana yang perlu retrieval on-demand
+- [x] agent memilih domain recall yang tepat (`user_memory`, `docs_kb`, `history`) tanpa keyword-hardcode sebagai fondasi utama
+- [x] agent menghindari RAG yang tidak perlu bila jawaban sudah tersedia di canonical store atau injected context
+- [x] private/LAN SSRF policy tetap safe-by-default
+- [x] primary store dan mirror file tidak drift
+- [x] `memory-langchain` tetap sinkron setelah mutation
+- [x] auth policy jelas untuk siapa yang boleh mengubah identity/profile
+- [x] live runtime proof tersedia, bukan hanya unit test
+
+## Validation Notes (2026-03-29)
+
+- Verified green with the official wrapper: `pnpm test -- src/auto-reply/self-facts.test.ts`, `pnpm test -- src/auto-reply/memory-save.test.ts`, `pnpm test -- src/auto-reply/memory-recall.test.ts`, `pnpm test -- src/auto-reply/scheduling-intent.test.ts`, `pnpm test -- src/auto-reply/reply/get-reply-run.media-only.test.ts`, `pnpm test -- src/agents/system-prompt.durable-workspace.test.ts`, `pnpm test -- src/auto-reply/reply/mutation-auth-prompt.test.ts`, and `pnpm test -- src/agents/tools/web-fetch.ssrf.test.ts`.
+- Re-run validation on 2026-03-29 is green for the same focused suite (using `timeout 180s`) plus `src/agents/system-prompt.test.ts` with `OPENCLAW_TEST_PROFILE=serial OPENCLAW_TEST_SERIAL_GATEWAY=1` (`timeout 240s`).
+- During re-run, one stale assertion in `src/agents/system-prompt.test.ts` was aligned from `memory backend` wording to the current `retrieval backend` wording, then the full file passed.
+- `pnpm format` and `pnpm build` pass on the current branch after the stricter durable-mutation prompt updates.
+- `pnpm test -- src/agents/system-prompt.test.ts` can stall under the default wrapper profile in this environment, but passes with `OPENCLAW_TEST_PROFILE=serial OPENCLAW_TEST_SERIAL_GATEWAY=1` plus `timeout 240s`.
+- Live runtime proof: `proofsurfaces3` fresh workspace accepted `Panggilanmu Jade. Saat ngobrol, jawab lebih ringkas.` and rewrote `IDENTITY.md` with `Name: Jade`, showing durable identity mutation no longer depends on a magic phrase like “from now on”.
+- Live runtime proof: `proofsurfaces4` fresh workspace accepted `Simpan aturan ini di workspace: tiap edit harus memakai referensi upstream yang dinamis dan tidak boleh bergantung pada regex atau trigger exact-word.` and appended the rule to `AGENTS.md`, not `TOOLS.md`.
+- Live runtime proof: owner memory save with broader phrasing (`tolong ingat kalau framework favorit saya itu Astro`) writes the canonical fact and mirrors it into `USER.md`.
+- Live runtime proof: owner memory recall (`apa yang ada di memory saya tentang framework favorit?`) now answers directly from canonical owner facts instead of falling through to empty RAG retrieval.
+- Prompt/runtime hardening now explicitly forbids keyword banks, regex trigger lists, memorized sentence templates, and advisory-mode detours when the user is asking for a durable workspace mutation; the current-turn auth prompt also states that only explicit owner direct messages may mutate identity/profile/workspace files.
+- SSRF safety is validated by `pnpm test -- src/agents/tools/web-fetch.ssrf.test.ts`.
+- `memory-langchain` reachability is now green while a local Chroma server is running on `127.0.0.1:8889`; `openclaw memory status --json` shows `vector.available: true` and per-domain probes available for `user_memory`, `docs_kb`, and `history`.
+- Live runtime proof (2026-03-29): `proofsurfaces4` accepted persona change and wrote it to `SOUL.md` (short, direct style) without relying on a magic phrase.
+- Live runtime proof (2026-03-29): `proofsurfaces4` accepted heartbeat request and appended the checklist to `HEARTBEAT.md` without a keyword trigger.
+- Live runtime proof (2026-03-29): `proofsurfaces4` confirmed `BOOTSTRAP.md` was removed when asked to close the bootstrap lifecycle.
+- Live runtime proof (2026-03-29): `proofsurfaces4` created a workspace-local skill at `skills/weekly-release/SKILL.md` via natural instruction.
+- Live runtime proof (2026-03-29): `proofsurfaces4` wrote canonical knowledge to `memory/knowledge/weekly-release-checklist.md`.
+- Live runtime proof (2026-03-29): history recall answered correctly for a recent in-chat code (`ALFA-42`), showing history-domain retrieval when intent is history.
+- Live runtime proof (2026-03-29): cron reminder scheduled via natural language; `openclaw cron list --json` shows the created job.
+- Live runtime proof (2026-03-29): webhook/action request sent a POST to `https://httpbin.org/post` and confirmed receipt.
+- Live runtime proof (2026-03-29): config/runtime intent verified by checking `gateway.mode` in `openclaw.json` (remains `local`) without adding extra keys.
+- Live runtime proof (2026-03-29): “only answer” request (`2+2`) returned `4` and did not change `AGENTS.md` mtime in the proof workspace.
+- Live runtime proof (2026-03-29): after adding a journal entry in the main workspace, `openclaw memory index --agent main --verbose` completed and `openclaw memory status --agent main --json` reports memory files indexed (sourceCounts for `memory` > 0) with an updated `lastSyncAt`, satisfying post-mutation `memory-langchain` sync.
 
 ---
 

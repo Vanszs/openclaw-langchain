@@ -87,6 +87,17 @@ describe("memory recall deterministic routing", () => {
     expect(shouldInjectDeterministicMemoryRecall("kemarin saya bilang apa tentang DuckDB?")).toBe(
       true,
     );
+    expect(
+      shouldInjectDeterministicMemoryRecall("cari lagi percakapan saya kemarin soal deploy"),
+    ).toBe(true);
+    expect(
+      shouldInjectDeterministicMemoryRecall("apa yang ada di memory saya tentang editor favorit?"),
+    ).toBe(true);
+    expect(
+      shouldInjectDeterministicMemoryRecall(
+        "tolong carikan dokumentasi OpenClaw untuk gateway token",
+      ),
+    ).toBe(true);
   });
 
   it("does not match memory save requests or generic system phrasing", () => {
@@ -125,6 +136,32 @@ describe("memory recall deterministic routing", () => {
     expect(result?.directReply?.text).toBe(
       "Nama yang saya simpan untuk owner profile ini adalah Bevan Satria.",
     );
+    expect(result?.note).toContain("owner-profile");
+  });
+
+  it("answers broader owner-profile phrasing from canonical active owner facts", async () => {
+    const workspaceDir = await createWorkspace();
+    await upsertUserMemoryFact({
+      workspaceDir,
+      namespace: "preferences",
+      key: "editor.favorite",
+      value: "Neovim",
+      provenance: { source: "test" },
+    });
+
+    const result = await buildDeterministicMemoryRecallContext({
+      ctx: {
+        SessionKey: "agent:main:telegram:direct:123",
+        Provider: "telegram",
+        ChatType: "direct",
+        SenderId: "123",
+      },
+      cfg: ownerCfg,
+      query: "apa yang ada di memory saya tentang editor favorit?",
+      workspaceDir,
+    });
+
+    expect(result?.directReply?.text).toContain("preferences.editor.favorite = Neovim");
     expect(result?.note).toContain("owner-profile");
   });
 

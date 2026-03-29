@@ -1,8 +1,15 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { ensureAgentWorkspace } from "../agents/workspace.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { storeDocsKbRecord } from "../memory/docs-kb-store.js";
 import type { MemoryDomain } from "../memory/types.js";
-import { upsertUserMemoryFact } from "../memory/user-memory-store.js";
+import {
+  listActiveUserMemoryFacts,
+  upsertUserMemoryFact,
+  type UserMemoryFactRecord,
+} from "../memory/user-memory-store.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../utils/message-channel.js";
 import { resolveCommandAuthorization } from "./command-auth.js";
 import { findCueTokenIndex, findPhraseSpan, hasCueToken, tokenizeCueText } from "./cue-matcher.js";
@@ -142,9 +149,15 @@ const OWNER_PROFILE_FIELD_CONCEPTS = [
   "field_ticket",
   "field_code",
 ] as const;
+const USER_CANONICAL_SECTION_START = "<!-- openclaw:canonical-owner:start -->";
+const USER_CANONICAL_SECTION_END = "<!-- openclaw:canonical-owner:end -->";
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function trimLeadingValuePreamble(text: string): string {
@@ -277,6 +290,78 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return normalized || "note";
+}
+
+function buildManagedSection(params: {
+  heading: string;
+  start: string;
+  end: string;
+  body: string;
+}): string {
+  return `${params.heading}\n${params.start}\n${params.body.trim()}\n${params.end}`;
+}
+
+function upsertManagedSection(params: {
+  content: string;
+  heading: string;
+  start: string;
+  end: string;
+  body: string;
+}): string {
+  const nextBlock = buildManagedSection(params);
+  const pattern = new RegExp(
+    `${escapeRegExp(params.start)}[\\s\\S]*?${escapeRegExp(params.end)}`,
+    "m",
+  );
+  if (pattern.test(params.content)) {
+    return params.content.replace(pattern, `${params.start}\n${params.body.trim()}\n${params.end}`);
+  }
+  const trimmed = params.content.trimEnd();
+  const separator = trimmed ? "\n\n" : "";
+  return `${trimmed}${separator}${nextBlock}\n`;
+}
+
+function formatOwnerFactForMirror(record: UserMemoryFactRecord): string {
+  return `- ${record.namespace}.${record.key}: ${record.value}`;
+}
+
+async function readFileIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, "utf-8");
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function syncOwnerFactsToUserFile(workspaceDir: string): Promise<void> {
+  const ensured = await ensureAgentWorkspace({
+    dir: workspaceDir,
+    ensureBootstrapFiles: true,
+  });
+  if (!ensured.userPath) {
+    return;
+  }
+  const activeFacts = await listActiveUserMemoryFacts(workspaceDir, {
+    namespaces: ["profile", "preferences", "reference"],
+  });
+  const existing = (await readFileIfExists(ensured.userPath)) ?? "# USER.md - About The User\n";
+  const body =
+    activeFacts.length > 0
+      ? activeFacts.map((fact) => formatOwnerFactForMirror(fact)).join("\n")
+      : "- Belum ada fakta owner canonical yang tersimpan.";
+  const next = upsertManagedSection({
+    content: existing,
+    heading: "## Canonical Owner Profile",
+    start: USER_CANONICAL_SECTION_START,
+    end: USER_CANONICAL_SECTION_END,
+    body,
+  });
+  await fs.mkdir(path.dirname(ensured.userPath), { recursive: true });
+  await fs.writeFile(ensured.userPath, next, "utf-8");
 }
 
 function buildKnowledgeTitle(query: string, sourceText: string): string {
@@ -698,6 +783,7 @@ export async function maybeHandleDeterministicMemorySave(params: {
       value: fact.value,
       provenance: buildProvenance(params.ctx),
     });
+    await syncOwnerFactsToUserFile(params.workspaceDir);
     const supersededText = result.superseded ? " Record lama disupersede." : "";
     return {
       reply: `Tersimpan ke user memory: ${fact.key} = ${fact.value}.${supersededText}`,
